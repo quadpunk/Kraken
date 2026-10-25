@@ -25,7 +25,7 @@ Kraken is a synthesizer plugin that analyzes an audio sample and attempts to rec
 
 1. **Load Kraken** — Open Kraken in your DAW as a VST3 instrument.
 2. **Import a Sample** — Load the audio sample you want to recreate.
-3. **Analyze the Audio** — Start the analysis to let Kraken examine the sample's characteristics, takes 45-80 seconds, short samples work best.
+3. **Analyze the Audio** — Start the analysis to let Kraken examine the sample's characteristics, takes 20-80 seconds, short samples work best.
 4. **Generate a Patch** — Kraken will create and optimize a synth patch to approximate the original sound.
 5. **Listen and Adjust** — Play the generated patch, compare it with the original sample, and tweak the parameters if needed.
 
@@ -47,6 +47,19 @@ Kraken is a synthesizer plugin that analyzes an audio sample and attempts to rec
 Standalone
 1. Download "Kraken-Windows-xxx.zip" from the Assets section below.
 2. Run "kr@ken exe"
+
+### How the Synth Engine Works
+
+Kraken’s synth engine combines multiple sound-generation techniques to recreate the character of an audio sample.
+
+* **Oscillators:** Generate the basic waveforms that form the sound.
+* **Additive synthesis and FM:** Shape harmonic content and create more complex tones.
+* **Unison:** Layers multiple voices to create a fuller sound.
+* **Filter and envelopes:** Shape the tone and control how the sound evolves over time.
+* **Noise and modulation:** Add texture and movement.
+* **Effects:** Further refine the output.
+
+The analysis engine searches for suitable parameter settings and optimizes the synth patch to approximate the original sample.
 
 
 Status
