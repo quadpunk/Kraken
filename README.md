@@ -4,6 +4,8 @@ Kraken v0.3.0 — Windows VST3
 
 Kraken is an experimental synthesizer that attempts to recreate synthesizer patches from audio samples.
 
+<img width="1182" height="792" alt="image" src="https://github.com/user-attachments/assets/4069a93c-c846-475e-97ba-268c33a0b892" />
+
 Features
 
 - Automatic sample analysis and synth patch generation
