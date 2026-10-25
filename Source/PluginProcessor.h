@@ -3,6 +3,7 @@
 #include "Common.h"
 #include "SynthEngine.h"
 #include "Analyzer.h"
+#include "PresetManager.h"
 
 class KrakenProcessor : public juce::AudioProcessor
 {
@@ -24,10 +25,11 @@ public:
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 3.0; }
 
-    int getNumPrograms() override { return 1; }
-    int getCurrentProgram() override { return 0; }
-    void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return {}; }
+    // the 200 factory patches are exposed to the host as programs
+    int getNumPrograms() override { return (int) presets.factory().size(); }
+    int getCurrentProgram() override { return std::max (0, currentProgram); }
+    void setCurrentProgram (int) override;
+    const juce::String getProgramName (int) override;
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock&) override;
@@ -48,6 +50,15 @@ public:
     void applyKin (int index);
     void sendCommand (int cmd); // 1 = play sample, 2 = play patch, 3 = stop
 
+    // presets / patches (message thread)
+    void loadPreset (const kraken::PresetEntry&);
+    void stepPreset (int direction);                       // +1 / -1 through factory + user patches
+    bool saveCurrentAsUser (const juce::String& name);
+    kraken::PresetEntry currentEntry (const juce::String& name) const;
+    bool exportWav (const juce::File&);                    // renders the current patch at its root note
+    kraken::PresetManager presets;
+    juce::String presetName;
+
     juce::AudioProcessorValueTreeState apvts;
 
     // visible state (message thread only)
@@ -65,6 +76,9 @@ private:
     std::array<juce::RangedAudioParameter*, kraken::kNumParams> params {};
     std::array<std::atomic<float>*, kraken::kNumParams> raw {};
     juce::RangedAudioParameter* levelParam = nullptr;
+    juce::RangedAudioParameter* tuneParam = nullptr;
+    std::atomic<float>* tuneRaw = nullptr;
+    int currentProgram = -1;
     std::atomic<float>* levelRaw = nullptr;
 
     kraken::Synth synth;

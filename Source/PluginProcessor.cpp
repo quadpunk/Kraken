@@ -15,6 +15,9 @@ static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "level", 1 }, "Level",
         juce::NormalisableRange<float> (0.0f, 1.0f), def.level));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (
+        juce::ParameterID { "tune", 1 }, "Tune (cents)",
+        juce::NormalisableRange<float> (-50.0f, 50.0f), 0.0f));
     return layout;
 }
 
@@ -30,6 +33,8 @@ KrakenProcessor::KrakenProcessor()
     }
     levelParam = apvts.getParameter ("level");
     levelRaw = apvts.getRawParameterValue ("level");
+    tuneParam = apvts.getParameter ("tune");
+    tuneRaw = apvts.getRawParameterValue ("tune");
 
     kin.push_back (defaultPatch());
     statusMessage = "drop a sample on the kraken to feed it";
@@ -144,6 +149,7 @@ Patch KrakenProcessor::getPatch() const
     Patch p;
     for (int i = 0; i < kNumParams; ++i) p.p[(size_t) i] = raw[(size_t) i]->load();
     p.level = levelRaw->load();
+    p.tune = tuneRaw->load() * 0.01f;
     return p;
 }
 
@@ -151,6 +157,7 @@ void KrakenProcessor::setPatch (const Patch& p)
 {
     for (int i = 0; i < kNumParams; ++i) params[(size_t) i]->setValueNotifyingHost (p.p[(size_t) i]);
     levelParam->setValueNotifyingHost (p.level);
+    tuneParam->setValueNotifyingHost (tuneParam->convertTo0to1 (juce::jlimit (-50.0f, 50.0f, p.tune * 100.0f)));
 }
 
 void KrakenProcessor::setParam (int i, float v) { params[(size_t) i]->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, v)); }
@@ -249,6 +256,96 @@ void KrakenProcessor::applyResult (const AnalysisResult& r)
     matchPct = r.match;
     rootNote.store (r.midiNote);
     setPatch (r.best);
+
+    // keep every analysis result in the "recent" list so it can be recalled later
+    const auto stem = juce::File (sampleName).getFileNameWithoutExtension();
+    presetName = (stem.isEmpty() ? juce::String ("Analysis") : stem) + " " + juce::Time::getCurrentTime().formatted ("%H:%M:%S");
+    presets.addRecent (currentEntry (presetName));
+    currentProgram = -1;
+}
+
+//==============================================================================
+kraken::PresetEntry KrakenProcessor::currentEntry (const juce::String& name) const
+{
+    PresetEntry e;
+    e.name = name;
+    e.category = "User";
+    e.patch = getPatch();
+    e.root = rootNote.load();
+    e.timeMs = juce::Time::currentTimeMillis();
+    return e;
+}
+
+void KrakenProcessor::loadPreset (const PresetEntry& e)
+{
+    setPatch (e.patch);
+    rootNote.store (e.root);
+    presetName = e.name;
+    matchPct = 0.0f;
+    statusMessage = "patch: " + e.name + (e.category.isNotEmpty() ? "   [" + e.category + "]" : juce::String());
+    mutate();   // the kin blobs become relatives of the loaded patch
+    currentProgram = -1;
+    if (e.origin == PresetEntry::Origin::Factory)
+        for (size_t i = 0; i < presets.factory().size(); ++i)
+            if (presets.factory()[i].name == e.name) { currentProgram = (int) i; break; }
+}
+
+void KrakenProcessor::stepPreset (int direction)
+{
+    auto list = presets.factory();
+    for (auto& u : presets.user()) list.push_back (u);
+    if (list.empty()) return;
+    int idx = direction > 0 ? -1 : (int) list.size();
+    for (size_t i = 0; i < list.size(); ++i)
+        if (list[i].name == presetName) { idx = (int) i; break; }
+    idx = (idx + direction + (int) list.size()) % (int) list.size();
+    loadPreset (list[(size_t) idx]);
+}
+
+bool KrakenProcessor::saveCurrentAsUser (const juce::String& name)
+{
+    const auto clean = name.trim();
+    if (clean.isEmpty()) return false;
+    auto e = currentEntry (clean);
+    if (! presets.saveUser (e)) { statusMessage = "could not save the patch"; return false; }
+    presets.addRecent (e);
+    presetName = clean;
+    matchPct = 0.0f;
+    statusMessage = "saved patch: " + clean;
+    return true;
+}
+
+bool KrakenProcessor::exportWav (const juce::File& file)
+{
+    const double sr = 44100.0;
+    const int n = (int) (4.0 * sr), hold = (int) (2.5 * sr);
+    const auto p = getPatch();
+    const float f0 = 440.0f * std::pow (2.0f, (float) (rootNote.load() - 69) / 12.0f);
+    std::vector<float> out;
+    renderOffline (p, sr, f0, n, hold, out);
+
+    juce::AudioBuffer<float> buf (1, n);
+    for (int i = 0; i < n; ++i) buf.setSample (0, i, juce::jlimit (-1.0f, 1.0f, out[(size_t) i]));
+    file.deleteFile();
+    auto stream = std::make_unique<juce::FileOutputStream> (file);
+    if (! stream->openedOk()) return false;
+    juce::WavAudioFormat wav;
+    std::unique_ptr<juce::AudioFormatWriter> writer (wav.createWriterFor (stream.get(), sr, 1, 24, {}, 0));
+    if (writer == nullptr) return false;
+    stream.release();   // owned by the writer now
+    return writer->writeFromAudioSampleBuffer (buf, 0, n);
+}
+
+void KrakenProcessor::setCurrentProgram (int i)
+{
+    const auto& f = presets.factory();
+    if (i >= 0 && i < (int) f.size()) loadPreset (f[(size_t) i]);
+}
+
+const juce::String KrakenProcessor::getProgramName (int i)
+{
+    const auto& f = presets.factory();
+    return (i >= 0 && i < (int) f.size()) ? f[(size_t) i].name : juce::String();
 }
 
 //==============================================================================
@@ -259,6 +356,7 @@ void KrakenProcessor::getStateInformation (juce::MemoryBlock& dest)
     apvts.state.setProperty ("root", rootNote.load(), nullptr);
     apvts.state.setProperty ("sampleName", sampleName, nullptr);
     apvts.state.setProperty ("match", matchPct, nullptr);
+    apvts.state.setProperty ("presetName", presetName, nullptr);
     if (auto xml = apvts.copyState().createXml()) copyXmlToBinary (*xml, dest);
 }
 
@@ -271,6 +369,7 @@ void KrakenProcessor::setStateInformation (const void* data, int size)
             rootNote.store ((int) apvts.state.getProperty ("root", 57));
             sampleName = apvts.state.getProperty ("sampleName", "").toString();
             matchPct = (float) (double) apvts.state.getProperty ("match", 0.0);
+            presetName = apvts.state.getProperty ("presetName", "").toString();
         }
 }
 

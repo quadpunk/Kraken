@@ -28,7 +28,9 @@ juce_add_plugin(Kraken
 target_sources(Kraken PRIVATE
     Source/PluginProcessor.cpp
     Source/PluginEditor.cpp
-    Source/Analyzer.cpp)
+    Source/Analyzer.cpp
+    Source/AnalyzerCore.cpp
+    Source/PresetManager.cpp)
 
 target_compile_definitions(Kraken PUBLIC
     JUCE_WEB_BROWSER=0

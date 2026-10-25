@@ -94,6 +94,11 @@ BWLookAndFeel::BWLookAndFeel()
     setColour (juce::TextButton::buttonColourId, juce::Colours::black);
     setColour (juce::TextButton::textColourOffId, juce::Colours::white);
     setColour (juce::TextButton::textColourOnId, juce::Colours::white);
+    setColour (juce::PopupMenu::backgroundColourId, juce::Colours::black);
+    setColour (juce::PopupMenu::textColourId, juce::Colours::white);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, juce::Colours::white);
+    setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::black);
+    setColour (juce::PopupMenu::headerTextColourId, juce::Colours::white);
 }
 
 void BWLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool down)
@@ -502,7 +507,7 @@ void KrakenView::drawHeader (juce::Graphics& g)
 
     g.setColour (white);
     g.setFont (monoFont (12.0f, true));
-    g.drawText (status, 24, 78, getWidth() / 2 - 40, 16, juce::Justification::centredLeft, false);
+    g.drawText (status, 24, 78, juce::jmax (220, getWidth() - 500), 16, juce::Justification::centredLeft, true);
 
     if (proc.analysing.load())
     {
@@ -885,7 +890,7 @@ KrakenEditor::KrakenEditor (KrakenProcessor& p) : juce::AudioProcessorEditor (&p
 {
     setLookAndFeel (&laf);
     addAndMakeVisible (view);
-    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn })
+    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn, &prevBtn, &presetBtn, &nextBtn, &saveBtn, &exportBtn })
     {
         b->setLookAndFeel (&laf);
         addAndMakeVisible (*b);
@@ -906,6 +911,13 @@ KrakenEditor::KrakenEditor (KrakenProcessor& p) : juce::AudioProcessorEditor (&p
     playPatchBtn.onClick = [this] { proc.sendCommand (2); };
     stopBtn.onClick = [this] { proc.sendCommand (3); };
     mutateBtn.onClick = [this] { proc.mutate(); };
+    prevBtn.onClick = [this] { proc.stepPreset (-1); };
+    nextBtn.onClick = [this] { proc.stepPreset (+1); };
+    presetBtn.onClick = [this] { showPresetMenu(); };
+    saveBtn.onClick = [this] { askNameAndSave(); };
+    exportBtn.onClick = [this] { showExportMenu(); };
+    timerCallback();
+    startTimerHz (4);
 
     setResizable (true, true);
     setResizeLimits (820, 620, 1700, 1200);
@@ -914,7 +926,8 @@ KrakenEditor::KrakenEditor (KrakenProcessor& p) : juce::AudioProcessorEditor (&p
 
 KrakenEditor::~KrakenEditor()
 {
-    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn })
+    stopTimer();
+    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn, &prevBtn, &presetBtn, &nextBtn, &saveBtn, &exportBtn })
         b->setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
@@ -930,6 +943,169 @@ void KrakenEditor::resized()
     place (playPatchBtn, 110);
     place (playSampleBtn, 118);
     place (loadBtn, 126);
+
+    // second row: preset browser  [<] [name v] [>] [SAVE] [EXPORT]
+    int x2 = getWidth() - 24;
+    const int y2 = 62, h2 = 26, g2 = 6;
+    auto place2 = [&] (juce::TextButton& b, int w) { x2 -= w; b.setBounds (x2, y2, w, h2); x2 -= g2; };
+    place2 (exportBtn, 84);
+    place2 (saveBtn, 64);
+    place2 (nextBtn, 30);
+    place2 (presetBtn, 210);
+    place2 (prevBtn, 30);
+}
+
+namespace
+{
+struct FnCallback : juce::ModalComponentManager::Callback
+{
+    explicit FnCallback (std::function<void (int)> f) : fn (std::move (f)) {}
+    void modalStateFinished (int result) override { if (fn) fn (result); }
+    std::function<void (int)> fn;
+};
+}
+
+void KrakenEditor::timerCallback()
+{
+    juce::String t = proc.presetName.isEmpty() ? juce::String ("PRESETS  v") : proc.presetName;
+    if (t.length() > 22) t = t.substring (0, 21) + "...";
+    if (presetBtn.getButtonText() != t) presetBtn.setButtonText (t);
+}
+
+void KrakenEditor::showPresetMenu()
+{
+    const auto rec = proc.presets.recent();
+    const auto usr = proc.presets.user();
+    const auto& fac = proc.presets.factory();
+
+    juce::PopupMenu menu, recentMenu, userMenu;
+    for (size_t i = 0; i < rec.size(); ++i)
+        recentMenu.addItem (5000 + (int) i, rec[i].name, true, rec[i].name == proc.presetName);
+    if (rec.empty()) recentMenu.addItem (1, "(analyse a sample or save a patch)", false, false);
+    for (size_t i = 0; i < usr.size(); ++i)
+        userMenu.addItem (8000 + (int) i, usr[i].name, true, usr[i].name == proc.presetName);
+    if (usr.empty()) userMenu.addItem (2, "(press SAVE to keep a patch)", false, false);
+
+    menu.addSubMenu ("Recent  (" + juce::String ((int) rec.size()) + ")", recentMenu);
+    menu.addSubMenu ("My patches  (" + juce::String ((int) usr.size()) + ")", userMenu);
+    menu.addSeparator();
+
+    std::vector<juce::String> cats;
+    for (const auto& f : fac)
+        if (std::find (cats.begin(), cats.end(), f.category) == cats.end()) cats.push_back (f.category);
+    for (const auto& c : cats)
+    {
+        juce::PopupMenu sub;
+        for (size_t i = 0; i < fac.size(); ++i)
+            if (fac[i].category == c) sub.addItem (1000 + (int) i, fac[i].name, true, fac[i].name == proc.presetName);
+        menu.addSubMenu (c, sub);
+    }
+
+    juce::Component::SafePointer<KrakenEditor> safe (this);
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&presetBtn).withMinimumWidth (220),
+                        [safe, rec, usr] (int id)
+                        {
+                            if (safe == nullptr || id < 1000) return;
+                            const auto& f = safe->proc.presets.factory();
+                            if (id >= 8000)      { const auto i = (size_t) (id - 8000); if (i < usr.size()) safe->proc.loadPreset (usr[i]); }
+                            else if (id >= 5000) { const auto i = (size_t) (id - 5000); if (i < rec.size()) safe->proc.loadPreset (rec[i]); }
+                            else                 { const auto i = (size_t) (id - 1000); if (i < f.size())   safe->proc.loadPreset (f[i]); }
+                        });
+}
+
+void KrakenEditor::askNameAndSave()
+{
+    juce::Component::SafePointer<KrakenEditor> safe (this);
+    auto* aw = new juce::AlertWindow ("Save patch", "Give the patch a name:", juce::MessageBoxIconType::NoIcon, this);
+    aw->addTextEditor ("name", proc.presetName.isEmpty() ? juce::String ("My patch") : proc.presetName, "");
+    aw->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    aw->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+    aw->enterModalState (true, new FnCallback ([safe, aw] (int r)
+    {
+        if (r == 1 && safe != nullptr) safe->proc.saveCurrentAsUser (aw->getTextEditorContents ("name"));
+    }), true);
+}
+
+void KrakenEditor::showExportMenu()
+{
+    juce::PopupMenu m;
+    m.addItem (1, "Export this patch (.krkpatch)...");
+    m.addItem (2, "Export all my patches as a bank (.krkbank)...");
+    m.addItem (3, "Export this sound as WAV (4 s at root note)...");
+    m.addSeparator();
+    m.addItem (4, "Import patch or bank...");
+    m.addItem (5, "Show patch folder");
+
+    juce::Component::SafePointer<KrakenEditor> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&exportBtn).withMinimumWidth (260), [safe] (int id)
+    {
+        if (safe == nullptr || id == 0) return;
+        auto* self = safe.getComponent();
+        auto& proc = self->proc;
+        const auto docs = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory);
+        const auto name = proc.presetName.isEmpty() ? juce::String ("kraken patch") : proc.presetName;
+        const int saveFlags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                              | juce::FileBrowserComponent::warnAboutOverwriting;
+
+        if (id == 5) { proc.presets.userFolder().revealToUser(); return; }
+
+        if (id == 1)
+        {
+            self->chooser = std::make_unique<juce::FileChooser> ("Export patch", docs.getChildFile (juce::File::createLegalFileName (name) + ".krkpatch"), "*.krkpatch");
+            self->chooser->launchAsync (saveFlags, [safe] (const juce::FileChooser& fc)
+            {
+                auto f = fc.getResult();
+                if (safe == nullptr || f == juce::File()) return;
+                if (! f.hasFileExtension ("krkpatch")) f = f.withFileExtension ("krkpatch");
+                auto& p = safe->proc;
+                const bool ok = kraken::PresetManager::exportPatch (f, p.currentEntry (p.presetName.isEmpty() ? f.getFileNameWithoutExtension() : p.presetName));
+                p.statusMessage = ok ? "exported: " + f.getFileName() : "export failed";
+            });
+        }
+        else if (id == 2)
+        {
+            self->chooser = std::make_unique<juce::FileChooser> ("Export bank", docs.getChildFile ("kraken patches.krkbank"), "*.krkbank");
+            self->chooser->launchAsync (saveFlags, [safe] (const juce::FileChooser& fc)
+            {
+                auto f = fc.getResult();
+                if (safe == nullptr || f == juce::File()) return;
+                if (! f.hasFileExtension ("krkbank")) f = f.withFileExtension ("krkbank");
+                auto& p = safe->proc;
+                auto list = p.presets.user();
+                if (list.empty()) list = p.presets.recent();
+                if (list.empty()) { p.statusMessage = "nothing to export yet: save a patch first"; return; }
+                const bool ok = kraken::PresetManager::exportBank (f, list);
+                p.statusMessage = ok ? "exported " + juce::String ((int) list.size()) + " patches: " + f.getFileName() : "export failed";
+            });
+        }
+        else if (id == 3)
+        {
+            self->chooser = std::make_unique<juce::FileChooser> ("Export sound as WAV", docs.getChildFile (juce::File::createLegalFileName (name) + ".wav"), "*.wav");
+            self->chooser->launchAsync (saveFlags, [safe] (const juce::FileChooser& fc)
+            {
+                auto f = fc.getResult();
+                if (safe == nullptr || f == juce::File()) return;
+                if (! f.hasFileExtension ("wav")) f = f.withFileExtension ("wav");
+                safe->proc.statusMessage = safe->proc.exportWav (f) ? "exported: " + f.getFileName() : "WAV export failed";
+            });
+        }
+        else if (id == 4)
+        {
+            self->chooser = std::make_unique<juce::FileChooser> ("Import patch or bank", docs, "*.krkpatch;*.krkbank");
+            self->chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                        [safe] (const juce::FileChooser& fc)
+            {
+                const auto f = fc.getResult();
+                if (safe == nullptr || ! f.existsAsFile()) return;
+                auto& p = safe->proc;
+                const auto list = kraken::PresetManager::importFile (f);
+                if (list.empty()) { p.statusMessage = "that file contains no kr@ken patches"; return; }
+                for (const auto& e : list) p.presets.saveUser (e);
+                p.loadPreset (list.front());
+                p.statusMessage = "imported " + juce::String ((int) list.size()) + " patch(es) into My patches";
+            });
+        }
+    });
 }
 
 void KrakenEditor::filesDropped (const juce::StringArray& files, int, int)

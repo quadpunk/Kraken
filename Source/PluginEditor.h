@@ -75,7 +75,8 @@ private:
 
 //==============================================================================
 class KrakenEditor : public juce::AudioProcessorEditor,
-                     public juce::FileDragAndDropTarget
+                     public juce::FileDragAndDropTarget,
+                     private juce::Timer
 {
 public:
     explicit KrakenEditor (KrakenProcessor&);
@@ -88,11 +89,17 @@ public:
     void filesDropped (const juce::StringArray& files, int, int) override;
 
 private:
+    void timerCallback() override;
+    void showPresetMenu();
+    void showExportMenu();
+    void askNameAndSave();
+
     KrakenProcessor& proc;
     BWLookAndFeel laf;
     KrakenView view;
     juce::TextButton loadBtn { "LOAD SAMPLE" }, playSampleBtn { "PLAY SAMPLE" },
                      playPatchBtn { "PLAY PATCH" }, mutateBtn { "MUTATE" }, stopBtn { "STOP" };
+    juce::TextButton prevBtn { "<" }, presetBtn { "PRESETS" }, nextBtn { ">" }, saveBtn { "SAVE" }, exportBtn { "EXPORT" };
     std::unique_ptr<juce::FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (KrakenEditor)

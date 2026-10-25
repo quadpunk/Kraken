@@ -5,7 +5,7 @@
 //             HARMONIC (additive / inharmonic / formant) | SUB | NOISE (colour, tonal, transient)
 //             -> drive -> multimode 12/24 dB filter -> pitch-tracking COMB -> VOWEL formants
 //             -> amp (ADSR + hold, velocity, tremolo).  Mod: filter ADSR, pitch env, LFO, drift.
-// Master FX:  distortion + wavefold -> chorus -> delay -> reverb.
+// Master FX:  distortion + wavefold (2x oversampled) -> chorus -> delay -> reverb -> tone / low shelf.
 #pragma once
 
 #include <algorithm>
@@ -40,6 +40,7 @@ enum : int
     FE_A, FE_D, FE_S, FE_R, LFO_RATE, LFO_VIB, LFO_FILT, LFO_TREM, LFO_SHAPE, LFO_FADE,
     // ARM 7: FX
     DIST_AMT, DIST_FOLD, CHO_MIX, CHO_RATE, CHO_DEPTH, DLY_TIME, DLY_FB, DLY_MIX, REV_SIZE, REV_DAMP, REV_MIX,
+    OUT_TONE, OUT_LOW,
     COUNT
 };
 } // namespace P
@@ -49,11 +50,11 @@ constexpr int kNumArms = 8;
 constexpr float kPi = 3.14159265358979f;
 constexpr float kTwoPi = 6.28318530717959f;
 
-static_assert (kNumParams == 75, "parameter table out of sync");
+static_assert (kNumParams == 77, "parameter table out of sync");
 
 constexpr int kArmFirst[kNumArms] = { P::A_SHAPE, P::B_SHAPE, P::C_TILT, P::SUB_LEVEL,
                                       P::F_CUTOFF, P::AMP_A, P::FE_A, P::DIST_AMT };
-constexpr int kArmCount[kNumArms] = { 8, 8, 8, 8, 14, 8, 10, 11 };
+constexpr int kArmCount[kNumArms] = { 8, 8, 8, 8, 14, 8, 10, 13 };
 
 inline int armOf (int param)
 {
@@ -80,7 +81,8 @@ inline const char* paramShort (int i)
         "comb", "comb tune", "comb fb", "vowel", "vowel pos", "vowel q",
         "attack", "decay", "sustain", "release", "pitch env", "pitch dec", "vel sens", "hold",
         "f attack", "f decay", "f sustain", "f release", "lfo rate", "vibrato", "lfo filter", "tremolo", "lfo shape", "lfo fade",
-        "distort", "fold", "chorus", "cho rate", "cho depth", "dly time", "dly fb", "delay", "rev size", "rev damp", "reverb" };
+        "distort", "fold", "chorus", "cho rate", "cho depth", "dly time", "dly fb", "delay", "rev size", "rev damp", "reverb",
+        "tone", "low" };
     return n[i];
 }
 
@@ -89,6 +91,7 @@ struct Patch
 {
     std::array<float, kNumParams> p {};
     float level = 0.7f;
+    float tune = 0.0f;   // semitones (-0.5..0.5), applied on note-on; set by the analyzer so the patch is in tune at its root note
 };
 
 inline Patch defaultPatch()
@@ -101,10 +104,12 @@ inline Patch defaultPatch()
         .75f, .15f, 0.f, 0.f, .3f, .55f, 0.f, .2f, 0.f, .5f, .5f, 0.f, .3f, .4f,    // filter
         .03f, .5f, .7f, .3f, .5f, .3f, .5f, 0.f,                                    // amp
         0.f, .5f, .3f, .3f, .45f, 0.f, 0.f, 0.f, 0.f, .2f,                          // mod
-        0.f, 0.f, 0.f, .3f, .4f, .5f, .3f, 0.f, .5f, .5f, 0.f };                    // fx
+        0.f, 0.f, 0.f, .3f, .4f, .5f, .3f, 0.f, .5f, .5f, 0.f,                     // fx
+        1.f, .5f };                                                                 // output tone (open) / low shelf (flat)
     Patch pt;
     for (int i = 0; i < kNumParams; ++i) pt.p[(size_t) i] = d[i];
     pt.level = 0.7f;
+    pt.tune = 0.0f;
     return pt;
 }
 
@@ -164,6 +169,9 @@ struct Derived
     // fx
     float distAmt = 0, foldAmt = 0, choMix = 0, choRate = 1, choDepth = 0;
     float dlyTime = 0.3f, dlyFb = 0, dlyMix = 0, revSize = 0.5f, revDamp = 0.5f, revMix = 0;
+    float toneCoef = 1.0f, lowCoef = 0.02f, lowGain = 0.0f;   // output tone (2 x one-pole LP) and low shelf
+    bool toneOn = false, lowOn = false;
+    float tuneRatio = 1.0f;
     float gain = 1;
 
     Derived() = default;
@@ -225,6 +233,15 @@ struct Derived
         choMix = p[CHO_MIX]; choRate = expMap (p[CHO_RATE], 0.1f, 6.0f); choDepth = p[CHO_DEPTH];
         dlyTime = expMap (p[DLY_TIME], 0.03f, 1.0f); dlyFb = p[DLY_FB] * 0.9f; dlyMix = p[DLY_MIX];
         revSize = p[REV_SIZE]; revDamp = p[REV_DAMP]; revMix = p[REV_MIX];
+
+        const float toneHz = expMap (p[OUT_TONE], 500.0f, 20000.0f);
+        toneOn = p[OUT_TONE] < 0.985f;
+        toneCoef = 1.0f - std::exp (-kTwoPi * std::min (toneHz, 0.45f * (float) sr) / (float) sr);
+        const float lowDb = (p[OUT_LOW] - 0.5f) * 2.0f * 9.0f;
+        lowOn = std::abs (lowDb) > 0.15f;
+        lowGain = std::pow (10.0f, lowDb / 20.0f) - 1.0f;
+        lowCoef = 1.0f - std::exp (-kTwoPi * 150.0f / (float) sr);
+        tuneRatio = std::exp2 (pt.tune / 12.0f);
 
         gain = pt.level * pt.level * 4.0f;
     }
@@ -690,6 +707,53 @@ struct RevAllpass
     }
 };
 
+// 2x oversampler (23-tap Blackman-windowed halfband FIR). Constant latency of kFxLatency samples
+// at the base rate. Used so that saturation / wavefolding does not alias into harsh, metallic overtones.
+constexpr int kFxLatency = 11;
+
+struct Oversampler2x
+{
+    float h[6] {};
+    std::array<float, 16> xin {};
+    std::array<float, 32> vout {};
+    int wi = 0, wv = 0;
+
+    Oversampler2x()
+    {
+        for (int i = 0; i < 6; ++i)
+        {
+            const int k = 2 * i + 1;
+            const float ideal = (i % 2 == 0 ? 1.0f : -1.0f) / (kPi * (float) k);
+            const float a = kPi * (float) k / 12.0f;
+            const float win = 0.42f + 0.5f * std::cos (a) + 0.08f * std::cos (2.0f * a);
+            h[i] = ideal * win;
+        }
+    }
+    void reset() { xin.fill (0.0f); vout.fill (0.0f); wi = wv = 0; }
+
+    // push one base-rate sample, get two 2x-rate samples (time ordered: e then o)
+    void up (float x, float& e, float& o)
+    {
+        xin[(size_t) (wi & 15)] = x;
+        auto at = [&] (int back) { return xin[(size_t) ((wi - back) & 15)]; };   // x[n'-back]
+        e = at (6);
+        float s = 0.0f;
+        for (int i = 0; i < 6; ++i) s += h[i] * (at (6 + i) + at (5 - i));
+        o = 2.0f * s;
+        ++wi;
+    }
+    // push two 2x-rate samples, get one base-rate sample
+    float down (float e, float o)
+    {
+        vout[(size_t) (wv & 31)] = e; ++wv;
+        vout[(size_t) (wv & 31)] = o; ++wv;
+        auto get = [&] (int k) { return vout[(size_t) ((wv - 1 - k) & 31)]; };
+        float s = 0.5f * get (11);
+        for (int i = 0; i < 6; ++i) s += h[i] * (get (10 - 2 * i) + get (12 + 2 * i));
+        return s;
+    }
+};
+
 struct FxChannel
 {
     int ch = 0;
@@ -700,10 +764,14 @@ struct FxChannel
     float choPhase = 0, dlyTimeSm = -1.0f, dlyLp = 0;
     std::array<RevComb, 8> combs;
     std::array<RevAllpass, 4> aps;
+    Oversampler2x os;
+    float toneCoef = 1.0f, lowCoef = 0.02f, lowGain = 0.0f, tone1 = 0.0f, tone2 = 0.0f, lowLp = 0.0f;
+    bool toneOn = false, lowOn = false;
 
     void prepare (double s, int channel)
     {
         sr = s; ch = channel;
+        os.reset(); tone1 = tone2 = lowLp = 0.0f;
         choPhase = 0.25f * (float) ch;
         dlyLp = 0.0f; dlyTimeSm = -1.0f;
         chorusLine.init ((int) (0.06 * sr) + 8);
@@ -725,21 +793,32 @@ struct FxChannel
         revFb = 0.7f + 0.28f * d.revSize;
         revDamp = 0.05f + 0.85f * d.revDamp;
         revMix = d.revMix;
+        toneCoef = d.toneCoef; toneOn = d.toneOn; lowCoef = d.lowCoef; lowGain = d.lowGain; lowOn = d.lowOn;
         if (dlyTimeSm < 0.0f) dlyTimeSm = dlyTarget;
     }
 
     float process (float x)
     {
-        if (distAmt > 0.002f)
         {
+            // saturation + wavefolder run at 2x the sample rate (always through the oversampler so that the
+            // latency never changes when the effect is switched on or off)
+            const bool doDist = distAmt > 0.002f, doFold = foldAmt > 0.002f;
             const float drv = 1.0f + distAmt * 30.0f;
             const float wet = std::min (1.0f, distAmt * 4.0f);
-            x += wet * (std::tanh (3.0f * drv * x) * (1.0f / 3.0f) - x);
-        }
-        if (foldAmt > 0.002f)
-        {
             const float g = 3.0f * (1.0f + foldAmt * 6.0f);
-            x += foldAmt * (std::sin (g * x) * (1.0f / 3.0f) - x);
+            float e, o;
+            os.up (x, e, o);
+            if (doDist)
+            {
+                e += wet * (std::tanh (3.0f * drv * e) * (1.0f / 3.0f) - e);
+                o += wet * (std::tanh (3.0f * drv * o) * (1.0f / 3.0f) - o);
+            }
+            if (doFold)
+            {
+                e += foldAmt * (std::sin (g * e) * (1.0f / 3.0f) - e);
+                o += foldAmt * (std::sin (g * o) * (1.0f / 3.0f) - o);
+            }
+            x = os.down (e, o);
         }
         if (choMix > 0.002f)
         {
@@ -765,6 +844,17 @@ struct FxChannel
             for (auto& c : combs) s += c.process (in, revFb, revDamp);
             for (auto& a : aps) s = a.process (s);
             x = x * (1.0f - 0.4f * revMix) + s * 3.0f * revMix;
+        }
+        if (lowOn)
+        {
+            lowLp += lowCoef * (x - lowLp);
+            x += lowGain * lowLp;
+        }
+        if (toneOn)
+        {
+            tone1 += toneCoef * (x - tone1);
+            tone2 += toneCoef * (tone1 - tone2);
+            x = tone2;
         }
         return x;
     }
@@ -800,7 +890,7 @@ public:
             for (auto& x : voices) if (x.age < v->age) v = &x;
         }
         ++counter;
-        v->noteOn (note, vel, 440.0f * std::pow (2.0f, (float) (note - 69) / 12.0f), sr, counter * 2654435761u, d);
+        v->noteOn (note, vel, 440.0f * std::pow (2.0f, (float) (note - 69) / 12.0f) * d.tuneRatio, sr, counter * 2654435761u, d);
         v->age = counter;
     }
     void noteOff (int note) { for (auto& v : voices) if (v.active() && v.note == note) v.noteOff(); }
@@ -849,12 +939,14 @@ inline void renderOffline (const Patch& patch, double sr, float freq, int numSam
     const Derived d (patch, sr);
     fx.prepare (sr, 0);
     fx.setParams (d);
-    v.noteOn (60, 1.0f, freq, sr, 12345u, d);
+    v.noteOn (60, 1.0f, freq * d.tuneRatio, sr, 12345u, d);
     out.resize ((size_t) numSamples);
-    for (int i = 0; i < numSamples; ++i)
+    // the FX chain has a fixed latency (oversampler); skip it so the render lines up with the voice
+    for (int t = 0; t < numSamples + kFxLatency; ++t)
     {
-        if (i == holdSamples) v.noteOff();
-        out[(size_t) i] = fx.process (v.tick (d));
+        if (t == holdSamples) v.noteOff();
+        const float y = fx.process (v.tick (d));
+        if (t >= kFxLatency) out[(size_t) (t - kFxLatency)] = y;
     }
 }
 
