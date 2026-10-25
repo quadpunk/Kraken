@@ -15,27 +15,38 @@ constexpr int kMinLen = 4096;
 //==============================================================================
 std::vector<float> resample (const std::vector<float>& in, double srcSr, double dstSr)
 {
-    if (srcSr == dstSr || in.empty()) return in;
+    if (in.empty() || srcSr <= 0.0 || dstSr <= 0.0) return {};
+    if (std::abs (srcSr - dstSr) < 1.0e-6) return in;
+
+    // Windowed-sinc resampling with a low-pass cutoff when downsampling.
+    // This preserves high-frequency content much better than averaging samples.
+    constexpr int radius = 16;
     const double ratio = srcSr / dstSr;
     const int outN = (int) std::floor ((double) in.size() / ratio);
-    std::vector<float> out ((size_t) std::max (outN, 0));
+    std::vector<float> out ((size_t) std::max (outN, 0), 0.0f);
+    const double cutoff = std::min (1.0, dstSr / srcSr) * 0.95;
     const int inN = (int) in.size();
+
     for (int j = 0; j < outN; ++j)
     {
-        const double a = j * ratio, b = (j + 1) * ratio;
-        if (ratio > 1.0)
+        const double pos = (double) j * ratio;
+        const int centre = (int) std::floor (pos);
+        double sum = 0.0, weightSum = 0.0;
+
+        for (int k = centre - radius + 1; k <= centre + radius; ++k)
         {
-            const int i0 = (int) a, i1 = std::min ((int) std::ceil (b), inN);
-            double sum = 0; int cnt = 0;
-            for (int i = i0; i < i1; ++i) { sum += in[(size_t) i]; ++cnt; }
-            out[(size_t) j] = cnt ? (float) (sum / cnt) : 0.0f;
+            if (k < 0 || k >= inN) continue;
+            const double x = (pos - (double) k) * cutoff;
+            const double sinc = std::abs (x) < 1.0e-9 ? 1.0 : std::sin (juce::MathConstants<double>::pi * x)
+                                                               / (juce::MathConstants<double>::pi * x);
+            const double distance = (pos - (double) k) / (double) radius;
+            if (std::abs (distance) >= 1.0) continue;
+            const double window = 0.5 + 0.5 * std::cos (juce::MathConstants<double>::pi * distance);
+            const double weight = cutoff * sinc * window;
+            sum += (double) in[(size_t) k] * weight;
+            weightSum += weight;
         }
-        else
-        {
-            const int i0 = (int) a, i1 = std::min (i0 + 1, inN - 1);
-            const float fr = (float) (a - i0);
-            out[(size_t) j] = in[(size_t) i0] * (1.0f - fr) + in[(size_t) i1] * fr;
-        }
+        out[(size_t) j] = std::abs (weightSum) > 1.0e-12 ? (float) (sum / weightSum) : 0.0f;
     }
     return out;
 }
@@ -104,7 +115,9 @@ struct FftSet
 {
     juce::dsp::FFT f512 { 9 };
     juce::dsp::FFT f2048 { 11 };
-    std::vector<float> buf = std::vector<float> (4096, 0.0f);
+    juce::dsp::FFT f4096 { 12 };
+    // JUCE real-only FFT requires a buffer of at least 2 * FFT size.
+    std::vector<float> buf = std::vector<float> (8192, 0.0f);
 };
 
 constexpr int kBands = 48;
@@ -136,17 +149,18 @@ void logSpectrogram (const std::vector<float>& x, int fftSize, std::vector<float
     thread_local FftSet fft;
     static const std::vector<float> w512 = makeHann (512);
     static const std::vector<float> w2048 = makeHann (2048);
+    static const std::vector<float> w4096 = makeHann (4096);
     static const BandMap b512 = makeBands (512);
     static const BandMap b2048 = makeBands (2048);
+    static const BandMap b4096 = makeBands (4096);
 
-    const bool is512 = (fftSize == 512);
-    const auto& win = is512 ? w512 : w2048;
-    const auto& bm = is512 ? b512 : b2048;
-    auto& f = is512 ? fft.f512 : fft.f2048;
+    const auto& win = fftSize == 512 ? w512 : (fftSize == 2048 ? w2048 : w4096);
+    const auto& bm = fftSize == 512 ? b512 : (fftSize == 2048 ? b2048 : b4096);
+    juce::dsp::FFT& f = fftSize == 512 ? fft.f512 : (fftSize == 2048 ? fft.f2048 : fft.f4096);
 
     const int n = (int) x.size();
-    const int hop = fftSize / 2;
-    const int frames = std::max (1, (n - fftSize) / hop + 1);
+    const int hop = fftSize / 4; // denser time sampling improves transient alignment
+    const int frames = std::max (1, (n < fftSize ? 1 : (n - fftSize) / hop + 1));
     const float sc = 4.0f / (float) fftSize;
     out.assign ((size_t) frames * (size_t) kBands, 0.0f);
 
@@ -172,6 +186,26 @@ void logSpectrogram (const std::vector<float>& x, int fftSize, std::vector<float
             e /= (float) (hi - lo);
             out[(size_t) fr * (size_t) kBands + (size_t) b] = 10.0f * std::log10 (e + 1.0e-9f);
         }
+    }
+}
+
+// Mean positive spectral change between adjacent frames. Emphasises attacks and
+// moving filter/envelope behaviour that a time-averaged spectrum can miss.
+void spectralFlux (const std::vector<float>& spec, std::vector<float>& out)
+{
+    const size_t frames = spec.size() / (size_t) kBands;
+    if (frames < 2) { out.assign (1, 0.0f); return; }
+    out.assign (frames - 1, 0.0f);
+    for (size_t f = 1; f < frames; ++f)
+    {
+        float flux = 0.0f;
+        for (int b = 0; b < kBands; ++b)
+        {
+            const float prev = spec[(f - 1) * (size_t) kBands + (size_t) b];
+            const float curr = spec[f * (size_t) kBands + (size_t) b];
+            flux += std::max (0.0f, curr - prev);
+        }
+        out[f - 1] = flux / (float) kBands;
     }
 }
 
@@ -205,19 +239,22 @@ public:
     Evaluator (std::vector<float> target, float f) : tgt (std::move (target)), freq (f)
     {
         N = (int) tgt.size();
-        hold = (int) ((float) N * 0.6f);
         double e = 0;
         for (float v : tgt) e += (double) v * v;
         tgtRms = (float) std::sqrt (e / std::max (N, 1));
+
         logSpectrogram (tgt, 512, t512);
         logSpectrogram (tgt, 2048, t2048);
+        logSpectrogram (tgt, 4096, t4096);
         envelopeDb (tgt, tEnv);
+        spectralFlux (t2048, tFlux);
+        hold = estimateHoldSample (tEnv, N);
     }
 
-    // lower is better. gainOut = linear gain that matches candidate RMS to target RMS.
+    // Lower is better. Gain is normalized separately so the optimizer focuses on timbre.
     float loss (const Patch& pIn, float* gainOut = nullptr) const
     {
-        thread_local std::vector<float> cand, s5, s20, env;
+        thread_local std::vector<float> cand, s5, s20, s40, env, flux;
         Patch p = pIn;
         p.level = 0.5f; // gain 1.0 (gain = level^2 * 4)
         renderOffline (p, kSR, freq, N, hold, cand);
@@ -234,21 +271,59 @@ public:
 
         logSpectrogram (cand, 512, s5);
         logSpectrogram (cand, 2048, s20);
+        logSpectrogram (cand, 4096, s40);
         envelopeDb (cand, env);
+        spectralFlux (s20, flux);
 
-        const float l1 = meanAbsDiff (t512, s5) / 30.0f;
-        const float l2 = meanAbsDiff (t2048, s20) / 30.0f;
-        const float le = meanAbsDiff (tEnv, env) / 20.0f;
-        return l1 + l2 + 0.5f * le;
+        const float lShort = meanAbsDiff (t512, s5) / 30.0f;
+        const float lMid = meanAbsDiff (t2048, s20) / 30.0f;
+        const float lLow = meanAbsDiff (t4096, s40) / 30.0f;
+        const float lEnv = meanAbsDiff (tEnv, env) / 20.0f;
+        const float lFlux = meanAbsDiff (tFlux, flux) / 20.0f;
+
+        // Multi-resolution spectrum + temporal envelope + spectral motion.
+        // Flux is intentionally lower-weighted: it helps transients without
+        // allowing a noisy attack to dominate the entire match.
+        return 0.75f * lShort + 1.0f * lMid + 0.75f * lLow
+             + 0.5f * lEnv + 0.25f * lFlux;
     }
 
-    static constexpr float kMaxLoss = 2.5f; // sum of weights
+    static constexpr float kMaxLoss = 3.25f;
 
 private:
+    static int estimateHoldSample (const std::vector<float>& env, int numSamples)
+    {
+        // Detect a likely release only when a reasonably stable, loud region is
+        // followed by a clear drop. Plucks/one-shots often have no identifiable
+        // note-off, so retain the previous conservative fallback in that case.
+        if (env.size() < 10 || numSamples < 4096)
+            return (int) ((float) numSamples * 0.6f);
+
+        const auto peakIt = std::max_element (env.begin(), env.end());
+        const int peakFrame = (int) std::distance (env.begin(), peakIt);
+        const float peakDb = *peakIt;
+        const int first = std::max (peakFrame + 4, 4);
+        const int last = (int) env.size() - 4;
+
+        for (int i = first; i < last; ++i)
+        {
+            const float preSlope = std::abs (env[(size_t) (i - 1)] - env[(size_t) (i - 3)]);
+            const float pre = (env[(size_t) (i - 3)] + env[(size_t) (i - 2)] + env[(size_t) (i - 1)]) / 3.0f;
+            const float post = (env[(size_t) i] + env[(size_t) (i + 1)] + env[(size_t) (i + 2)]) / 3.0f;
+            if (pre > peakDb - 8.0f && preSlope < 3.0f && post < pre - 8.0f)
+            {
+                const int candidate = i * 512;
+                return std::min (std::max (candidate, (int) (numSamples * 0.15f)),
+                                 (int) (numSamples * 0.9f));
+            }
+        }
+        return (int) ((float) numSamples * 0.6f);
+    }
+
     std::vector<float> tgt;
     float freq = 220.0f, tgtRms = 0.1f;
     int N = 0, hold = 0;
-    std::vector<float> t512, t2048, tEnv;
+    std::vector<float> t512, t2048, t4096, tEnv, tFlux;
 };
 
 //==============================================================================
@@ -429,13 +504,32 @@ void Analyzer::run()
             const bool sparse = (k & 1) != 0;
             auto& c = off[(size_t) k];
             bool any = false;
+            const float phase = (float) g / (float) std::max (generations - 1, 1);
             for (int d = 0; d < kNumParams; ++d)
             {
-                const bool mut = ! sparse || ud (rng) < 0.2f;
+                const int arm = armOf (d);
+                // Early search prioritises sound sources, envelopes and filters;
+                // later search broadens into harmonics, noise and FX.
+                float armChance = 0.55f;
+                if (phase < 0.35f)
+                    armChance = (arm == 0 || arm == 1 || arm == 4 || arm == 5 || arm == 6) ? 0.90f : 0.28f;
+                else if (phase < 0.75f)
+                    armChance = (arm == 7) ? 0.42f : 0.72f;
+                else
+                    armChance = (arm == 2 || arm == 3 || arm == 7) ? 0.72f : 0.58f;
+
+                const float chance = sparse ? armChance * 0.22f : armChance;
+                const bool mut = ud (rng) < chance;
                 any = any || mut;
-                c.p.p[(size_t) d] = std::min (1.0f, std::max (0.0f, mean[(size_t) d] + (mut ? sigma[(size_t) d] * nd (rng) : 0.0f)));
+                c.p.p[(size_t) d] = std::min (1.0f, std::max (0.0f,
+                    mean[(size_t) d] + (mut ? sigma[(size_t) d] * nd (rng) : 0.0f)));
             }
-            (void) any;
+            if (! any)
+            {
+                const int d = (int) (rng() % (unsigned) kNumParams);
+                c.p.p[(size_t) d] = std::min (1.0f, std::max (0.0f,
+                    mean[(size_t) d] + sigma[(size_t) d] * nd (rng)));
+            }
         }
         evalMany (off);
         std::sort (off.begin(), off.end(), byLoss);
@@ -526,7 +620,8 @@ void Analyzer::run()
     }
 
     const float lossNorm = best.loss / Evaluator::kMaxLoss;
-    result.match = 100.0f * std::min (1.0f, std::max (0.0f, 1.0f - 3.0f * lossNorm));
+    // This is a heuristic confidence score, not a perceptual percentage.
+    result.match = 100.0f * std::min (1.0f, std::max (0.0f, 1.0f - 2.2f * lossNorm));
     result.freq = freq;
     result.midiNote = (int) std::lround (69.0 + 12.0 * std::log2 ((double) freq / 440.0));
     result.ok = true;

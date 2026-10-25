@@ -16,7 +16,8 @@ struct AnalysisResult
 };
 
 // Background thread: sample -> pitch -> evolutionary search for a patch
-// whose rendered spectrogram + envelope resembles the sample.
+// whose rendered multi-resolution spectrum, envelope and spectral motion resemble
+// the sample. The analyzer estimates a likely note-off point from the target envelope.
 class Analyzer : public juce::Thread
 {
 public:
