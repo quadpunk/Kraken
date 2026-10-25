@@ -8,6 +8,17 @@ and lets you reshape that patch by dragging the tentacles of a black & white kra
 <img width="1362" height="931" alt="image" src="https://github.com/user-attachments/assets/d57269cb-a8b3-4e22-ad0a-93d98d828bdf" />
 
 
+## Installation:
+Download your relevant version from the release page WIN/MAC/Linux
+
+VST3:
+Put your downloaded VST3 file inside C:\Program Files\Common Files\VST3 or folder your DAW points to.
+Or relevant Linux/Mac folder.
+
+Standalone:
+Open kr@ken exe file in standalone folder from release
+
+
 ## Use
 1. Drop a sample onto the window (or **LOAD SAMPLE**). The analyzer runs in the background.
 2. When done, the best patch is loaded. **PLAY SAMPLE / PLAY PATCH** let you A/B at the detected root note.
