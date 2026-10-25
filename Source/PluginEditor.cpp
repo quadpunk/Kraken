@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "PluginEditor.h"
 
 using namespace kraken;
@@ -85,7 +86,7 @@ void drawPiece (juce::Graphics& g, int kind, juce::Point<float> pos, float rot, 
 }
 
 constexpr int kHeaderH = 112;
-constexpr int kFooterH = 100;
+constexpr int kFooterH = 200;
 } // namespace
 
 //==============================================================================
@@ -128,6 +129,7 @@ KrakenView::KrakenView (KrakenProcessor& p) : proc (p)
 void KrakenView::timerCallback()
 {
     time += 1.0f / 30.0f;
+    proc.updatePreviews();
     updateAnimation();
     repaint();
 }
@@ -347,7 +349,12 @@ void KrakenView::resized()
     const float by = (float) getHeight() - 52.0f;
     for (int k = 0; k < 6; ++k)
         kinRects[(size_t) k] = juce::Rectangle<float> (38.0f, 38.0f).withCentre ({ W - 34.0f - (float) (5 - k) * 50.0f, by });
-    waveRect = { margin, (float) getHeight() - 82.0f, kinRects[0].getX() - margin - 24.0f, 60.0f };
+    {
+        const float ww = kinRects[0].getX() - margin - 24.0f, H2 = (float) getHeight();
+        waveRect   = { margin, H2 - 186.0f, ww, 28.0f };
+        regionRect = { margin, H2 - 154.0f, ww, 56.0f };
+        patchRect  = { margin, H2 -  94.0f, ww, 56.0f };
+    }
     layoutInspector();
 }
 
@@ -521,7 +528,7 @@ void KrakenView::drawHeader (juce::Graphics& g)
     g.setColour (white.withAlpha (0.55f));
     g.setFont (monoFont (10.0f));
     g.drawText ("scroll = level " + juce::String (juce::roundToInt (proc.getLevel() * 100.0f)) + "%   dbl-click = reset",
-                24, getHeight() - 98, 360, 12, juce::Justification::centredLeft, false);
+                24, getHeight() - 198, 360, 12, juce::Justification::centredLeft, false);
 }
 
 void KrakenView::drawHead (juce::Graphics& g)
@@ -747,25 +754,88 @@ void KrakenView::drawBottom (juce::Graphics& g, const Patch& patch)
 {
     const auto white = juce::Colours::white;
 
-    // waveform
+    // sample editor: overview strip (handles) + zoomed sample region + rendered patch, all on the same time axis
+    const float sampleLen = proc.getSampleLength();
     g.setColour (white.withAlpha (0.35f));
     g.drawRoundedRectangle (waveRect, 4.0f, 1.0f);
-    if (! proc.thumb.empty())
+    g.drawRoundedRectangle (regionRect, 4.0f, 1.0f);
+    g.drawRoundedRectangle (patchRect, 4.0f, 1.0f);
+    if (! proc.thumb.empty() && sampleLen > 0.0f)
     {
         const float n = (float) proc.thumb.size();
-        g.setColour (white);
+        const float ss = proc.getSelStart(), se = proc.getSelEnd();
+        const float x0 = timeToX (ss), x1 = timeToX (se);
+        g.setColour (white.withAlpha (0.14f));
+        g.fillRect (juce::Rectangle<float> (x0, waveRect.getY() + 1.0f, x1 - x0, waveRect.getHeight() - 2.0f));
         for (size_t i = 0; i < proc.thumb.size(); ++i)
         {
-            const float x = waveRect.getX() + 3.0f + ((float) i / n) * (waveRect.getWidth() - 6.0f);
-            const float h = proc.thumb[i] * (waveRect.getHeight() * 0.5f - 4.0f);
+            const float t = ((float) i + 0.5f) / n * sampleLen;
+            const float x = timeToX (t);
+            const float h = proc.thumb[i] * (waveRect.getHeight() * 0.5f - 3.0f);
+            g.setColour (white.withAlpha (t >= ss && t <= se ? 1.0f : 0.3f));
             g.drawLine (x, waveRect.getCentreY() - h, x, waveRect.getCentreY() + h, 1.0f);
         }
+        g.setColour (white.withAlpha (0.4f));
+        for (float s = 1.0f; s < sampleLen; s += 1.0f)
+            g.drawLine (timeToX (s), waveRect.getBottom() - 4.0f, timeToX (s), waveRect.getBottom() - 1.5f, 1.0f);
+
+        const float gh = waveRect.getHeight() - 8.0f;
+        for (float xh : { x0, x1 })
+        {
+            g.setColour (white);
+            g.fillRect (xh - 1.0f, waveRect.getY() + 1.0f, 2.0f, waveRect.getHeight() - 2.0f);
+            g.fillRect (xh - 4.0f, waveRect.getCentreY() - gh * 0.5f, 8.0f, gh);
+            g.setColour (juce::Colours::black);
+            g.drawLine (xh, waveRect.getCentreY() - gh * 0.3f, xh, waveRect.getCentreY() + gh * 0.3f, 1.0f);
+        }
+        const float ph = proc.getPlayhead();
+        if (ph >= 0.0f)
+        {
+            g.setColour (white);
+            g.drawLine (timeToX (ph), waveRect.getY() + 1.0f, timeToX (ph), waveRect.getBottom() - 1.0f, 1.5f);
+        }
+
+        auto drawLane = [&] (const juce::Rectangle<float>& r, const std::vector<float>& v, const char* label)
+        {
+            g.setColour (white.withAlpha (0.15f));
+            g.drawLine (r.getX() + 3.0f, r.getCentreY(), r.getRight() - 3.0f, r.getCentreY(), 1.0f);
+            g.setColour (white);
+            const float nb = (float) v.size();
+            for (size_t i = 0; i < v.size(); ++i)
+            {
+                const float x = r.getX() + 3.0f + ((float) i + 0.5f) / nb * (r.getWidth() - 6.0f);
+                const float h = std::min (1.0f, v[i]) * (r.getHeight() * 0.5f - 3.0f);
+                g.drawLine (x, r.getCentreY() - h, x, r.getCentreY() + h, 1.0f);
+            }
+            g.setFont (monoFont (9.0f, true));
+            g.setColour (white.withAlpha (0.7f));
+            g.drawText (label, (int) r.getX() + 6, (int) r.getY() + 2, 200, 11, juce::Justification::left, false);
+            if (ph >= ss && ph <= se)
+            {
+                const float x = r.getX() + 3.0f + (ph - ss) / std::max (0.001f, se - ss) * (r.getWidth() - 6.0f);
+                g.setColour (white.withAlpha (0.9f));
+                g.drawLine (x, r.getY() + 1.0f, x, r.getBottom() - 1.0f, 1.5f);
+            }
+        };
+        drawLane (regionRect, proc.regionThumb, "SAMPLE (selected region)");
+        drawLane (patchRect, proc.patchThumb,
+                  ("PATCH (root note " + juce::MidiMessage::getMidiNoteName (proc.rootNote.load(), true, true, 4)
+                   + ", level-matched)").toRawUTF8());
+
+        const bool capped = (se - ss) > KrakenProcessor::kMaxAnalysisSec - 0.01f;
+        g.setFont (monoFont (10.0f));
+        g.setColour (white.withAlpha (capped ? 1.0f : 0.65f));
+        juce::String info = "ANALYSE REGION " + juce::String (ss, 2) + " - " + juce::String (se, 2) + " s   ("
+                            + juce::String (se - ss, 2) + " s, max 4.0)   sample " + juce::String (sampleLen, 1) + " s";
+        if (sampleLen > KrakenProcessor::kMaxAnalysisSec + 0.05f) info += "   drag handles / window";
+        g.drawText (info, (int) waveRect.getX(), (int) patchRect.getBottom() + 4, (int) waveRect.getWidth() - 120, 14,
+                    juce::Justification::centredLeft, true);
     }
     else
     {
         g.setFont (monoFont (11.0f));
         g.setColour (white.withAlpha (0.4f));
-        g.drawText ("drop a .wav / .aiff / .flac / .ogg here", waveRect, juce::Justification::centred, false);
+        g.drawText ("drop a .wav / .aiff / .flac / .ogg here", waveRect.getUnion (patchRect), juce::Justification::centred, false);
     }
 
     // kin blobs
@@ -800,9 +870,27 @@ void KrakenView::drawBottom (juce::Graphics& g, const Patch& patch)
 }
 
 //==============================================================================
+float KrakenView::timeToX (float t) const
+{
+    const float len = std::max (0.001f, proc.getSampleLength());
+    return waveRect.getX() + 3.0f + juce::jlimit (0.0f, 1.0f, t / len) * (waveRect.getWidth() - 6.0f);
+}
+float KrakenView::xToTime (float x) const
+{
+    const float len = proc.getSampleLength();
+    return juce::jlimit (0.0f, 1.0f, (x - waveRect.getX() - 3.0f) / std::max (1.0f, waveRect.getWidth() - 6.0f)) * len;
+}
 void KrakenView::mouseMove (const juce::MouseEvent& e)
 {
     mousePos = e.position;
+    if (proc.getSampleLength() > 0.0f && waveRect.contains (e.position))
+    {
+        hoverArm = hoverKin = hoverParam = -1;
+        const bool onHandle = std::abs (e.position.x - timeToX (proc.getSelStart())) < 9.0f
+                              || std::abs (e.position.x - timeToX (proc.getSelEnd())) < 9.0f;
+        setMouseCursor (onHandle ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::DraggingHandCursor);
+        return;
+    }
     const auto patch = proc.getPatch();
     hoverArm = -1;
     for (int i = 0; i < kNumArms; ++i)
@@ -820,6 +908,27 @@ void KrakenView::mouseMove (const juce::MouseEvent& e)
 void KrakenView::mouseDown (const juce::MouseEvent& e)
 {
     mouseMove (e);
+    if (proc.getSampleLength() > 0.0f && waveRect.contains (e.position))
+    {
+        const float len = proc.getSampleLength();
+        const float ss = proc.getSelStart(), se = proc.getSelEnd();
+        const float d0 = std::abs (e.position.x - timeToX (ss)), d1 = std::abs (e.position.x - timeToX (se));
+        if (d0 < 9.0f && d0 <= d1)      selDrag = SelDrag::start;
+        else if (d1 < 9.0f)             selDrag = SelDrag::end;
+        else
+        {
+            const float t = xToTime (e.position.x);
+            if (t < ss || t > se)   // click outside: centre the window there
+            {
+                const float L = se - ss;
+                const float a = juce::jlimit (0.0f, std::max (0.0f, len - L), t - 0.5f * L);
+                proc.setSelection (a, a + L, true);
+            }
+            selDrag = SelDrag::window;
+            selGrab = t - proc.getSelStart();
+        }
+        return;
+    }
     if (hoverKin >= 0) { proc.applyKin (hoverKin); return; }
     if (hoverParam >= 0)
     {
@@ -845,6 +954,20 @@ void KrakenView::mouseDown (const juce::MouseEvent& e)
 void KrakenView::mouseDrag (const juce::MouseEvent& e)
 {
     mousePos = e.position;
+    if (selDrag != SelDrag::none)
+    {
+        const float t = xToTime (e.position.x);
+        const float ss = proc.getSelStart(), se = proc.getSelEnd();
+        if (selDrag == SelDrag::start)      proc.setSelection (t, se, true);
+        else if (selDrag == SelDrag::end)   proc.setSelection (ss, t, false);
+        else
+        {
+            const float L = se - ss;
+            const float a = juce::jlimit (0.0f, std::max (0.0f, proc.getSampleLength() - L), t - selGrab);
+            proc.setSelection (a, a + L, true);
+        }
+        return;
+    }
     if (dragParam >= 0) { setParamFromCell (dragParam, e.position.x); return; }
     if (dragArm < 0) return;
     const auto& z = zones[(size_t) dragArm];
@@ -856,6 +979,7 @@ void KrakenView::mouseDrag (const juce::MouseEvent& e)
 
 void KrakenView::mouseUp (const juce::MouseEvent&)
 {
+    selDrag = SelDrag::none;
     if (dragParam >= 0) { proc.endGesture (dragParam); dragParam = -1; }
     if (dragArm >= 0)
     {
@@ -890,7 +1014,7 @@ KrakenEditor::KrakenEditor (KrakenProcessor& p) : juce::AudioProcessorEditor (&p
 {
     setLookAndFeel (&laf);
     addAndMakeVisible (view);
-    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn, &prevBtn, &presetBtn, &nextBtn, &saveBtn, &exportBtn })
+    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn, &prevBtn, &presetBtn, &nextBtn, &saveBtn, &exportBtn, &analyseBtn })
     {
         b->setLookAndFeel (&laf);
         addAndMakeVisible (*b);
@@ -911,6 +1035,7 @@ KrakenEditor::KrakenEditor (KrakenProcessor& p) : juce::AudioProcessorEditor (&p
     playPatchBtn.onClick = [this] { proc.sendCommand (2); };
     stopBtn.onClick = [this] { proc.sendCommand (3); };
     mutateBtn.onClick = [this] { proc.mutate(); };
+    analyseBtn.onClick = [this] { proc.analyseSelection(); };
     prevBtn.onClick = [this] { proc.stepPreset (-1); };
     nextBtn.onClick = [this] { proc.stepPreset (+1); };
     presetBtn.onClick = [this] { showPresetMenu(); };
@@ -920,14 +1045,14 @@ KrakenEditor::KrakenEditor (KrakenProcessor& p) : juce::AudioProcessorEditor (&p
     startTimerHz (4);
 
     setResizable (true, true);
-    setResizeLimits (820, 620, 1700, 1200);
-    setSize (980, 720);
+    setResizeLimits (820, 700, 1700, 1280);
+    setSize (980, 820);
 }
 
 KrakenEditor::~KrakenEditor()
 {
     stopTimer();
-    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn, &prevBtn, &presetBtn, &nextBtn, &saveBtn, &exportBtn })
+    for (auto* b : { &loadBtn, &playSampleBtn, &playPatchBtn, &mutateBtn, &stopBtn, &prevBtn, &presetBtn, &nextBtn, &saveBtn, &exportBtn, &analyseBtn })
         b->setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
@@ -935,6 +1060,10 @@ KrakenEditor::~KrakenEditor()
 void KrakenEditor::resized()
 {
     view.setBounds (getLocalBounds());
+    {
+        const auto wb = view.getWaveBounds();
+        analyseBtn.setBounds (wb.getRight() - 110, wb.getBottom() + 3, 110, 22);
+    }
     int x = getWidth() - 24;
     const int y = 18, h = 30, gap = 8;
     auto place = [&] (juce::TextButton& b, int w) { x -= w; b.setBounds (x, y, w, h); x -= gap; };
@@ -1031,6 +1160,8 @@ void KrakenEditor::showExportMenu()
     juce::PopupMenu m;
     m.addItem (1, "Export this patch (.krkpatch)...");
     m.addItem (2, "Export all my patches as a bank (.krkbank)...");
+    m.addItem (6, "Export this patch as MIDI SysEx (.syx)...");
+    m.addItem (7, "Export all my patches as SysEx (.syx)...");
     m.addItem (3, "Export this sound as WAV (4 s at root note)...");
     m.addSeparator();
     m.addItem (4, "Import patch or bank...");
@@ -1078,6 +1209,24 @@ void KrakenEditor::showExportMenu()
                 p.statusMessage = ok ? "exported " + juce::String ((int) list.size()) + " patches: " + f.getFileName() : "export failed";
             });
         }
+        else if (id == 6 || id == 7)
+        {
+            const bool single = id == 6;
+            self->chooser = std::make_unique<juce::FileChooser> ("Export SysEx", docs.getChildFile (juce::File::createLegalFileName (single ? name : juce::String ("kraken patches")) + ".syx"), "*.syx");
+            self->chooser->launchAsync (saveFlags, [safe, single] (const juce::FileChooser& fc)
+            {
+                auto f = fc.getResult();
+                if (safe == nullptr || f == juce::File()) return;
+                if (! f.hasFileExtension ("syx")) f = f.withFileExtension ("syx");
+                auto& p = safe->proc;
+                std::vector<kraken::PresetEntry> list;
+                if (single) list.push_back (p.currentEntry (p.presetName.isEmpty() ? f.getFileNameWithoutExtension() : p.presetName));
+                else { list = p.presets.user(); if (list.empty()) list = p.presets.recent(); }
+                if (list.empty()) { p.statusMessage = "nothing to export yet: save a patch first"; return; }
+                const bool ok = kraken::PresetManager::exportSyx (f, list);
+                p.statusMessage = ok ? "exported " + juce::String ((int) list.size()) + " SysEx patch(es): " + f.getFileName() : "export failed";
+            });
+        }
         else if (id == 3)
         {
             self->chooser = std::make_unique<juce::FileChooser> ("Export sound as WAV", docs.getChildFile (juce::File::createLegalFileName (name) + ".wav"), "*.wav");
@@ -1091,7 +1240,7 @@ void KrakenEditor::showExportMenu()
         }
         else if (id == 4)
         {
-            self->chooser = std::make_unique<juce::FileChooser> ("Import patch or bank", docs, "*.krkpatch;*.krkbank");
+            self->chooser = std::make_unique<juce::FileChooser> ("Import patch or bank", docs, "*.krkpatch;*.krkbank;*.syx");
             self->chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                                         [safe] (const juce::FileChooser& fc)
             {

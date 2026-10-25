@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 
 #include "Common.h"
@@ -46,6 +47,20 @@ public:
     float getLevel() const { return levelRaw->load(); }
 
     void loadSampleFile (const juce::File&);
+
+    // sample editor: the region that is analysed and previewed (max kMaxAnalysisSec)
+    static constexpr float kMaxAnalysisSec = 4.0f;
+    float getSampleLength() const { return fullMono.empty() ? 0.0f : (float) fullMono.size() / (float) fullSr; }
+    float getSelStart() const { return selStart; }
+    float getSelEnd() const { return selEnd; }
+    void setSelection (float startSec, float endSec, bool startMoved);   // enforces 0.05 s .. 4 s
+    void analyseSelection();
+    float getPlayhead() const { return playhead.load(); }
+
+    // comparison lanes (message thread): peak envelopes of the selected sample region and of the current patch rendered
+    // at its root note, level-matched to the sample (RMS), both scaled so the sample's peak = 1
+    void updatePreviews();
+    std::vector<float> regionThumb, patchThumb;                // seconds into the sample, <0 when idle
     void mutate();
     void applyKin (int index);
     void sendCommand (int cmd); // 1 = play sample, 2 = play patch, 3 = stop
@@ -63,7 +78,7 @@ public:
 
     // visible state (message thread only)
     std::vector<kraken::Patch> kin;
-    std::vector<float> thumb;
+    std::vector<float> thumb;   // peak envelope of the whole sample (normalised)
     juce::String sampleName, statusMessage;
     float matchPct = 0.0f;
     std::atomic<int> rootNote { 57 };
@@ -88,6 +103,14 @@ private:
     juce::SpinLock sampleLock;
     std::vector<float> sampleData;
     double sampleSr = 44100.0;
+    std::vector<float> fullMono;   // message thread only: the loaded sample
+    double fullSr = 44100.0;
+    float selStart = 0.0f, selEnd = 0.0f;
+    juce::uint64 previewKey = 0, regionKey = 0;
+    juce::uint32 lastPreviewMs = 0;
+    float regionPeak = 1.0f, regionRms = 0.0f;
+    std::atomic<int> selStartSamp { 0 }, selEndSamp { 0 };
+    std::atomic<float> playhead { -1.0f };
     double samplePos = 0.0;
     bool samplePlaying = false;
     std::atomic<int> command { 0 };

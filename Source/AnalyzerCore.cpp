@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "AnalyzerCore.h"
 #include "Presets.h"
 
@@ -40,7 +41,6 @@ namespace kraken
 namespace
 {
 constexpr double kSR = 44100.0;
-constexpr int kMaxLen = 48510;   // 1.1 s
 constexpr int kMinLen = 8192;
 constexpr int kBands = 64;
 constexpr double kFLo = 25.0, kFHi = 16000.0;
@@ -705,7 +705,7 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
     const int maxThreads = std::max (1, opt.maxThreads);
 
     // ---- 1. prepare the target ------------------------------------------------
-    const size_t maxIn = (size_t) (inputSr * 6.0);
+    const size_t maxIn = (size_t) (inputSr * 12.0);
     if (input.size() > maxIn) input.resize (maxIn);
     auto sig = resample (input, inputSr, kSR);
     input.clear();
@@ -714,9 +714,13 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
     if (sig.size() < 2048 || peak < 1.0e-5f) return result;
 
     size_t start = 0;
-    while (start < sig.size() && std::abs (sig[start]) < 0.02f * peak) ++start;
-    start = start > 128 ? start - 128 : 0;
-    const size_t len = std::min (sig.size() - start, (size_t) kMaxLen);
+    if (opt.trimSilence)
+    {
+        while (start < sig.size() && std::abs (sig[start]) < 0.02f * peak) ++start;
+        start = start > 128 ? start - 128 : 0;
+    }
+    const size_t maxLen = (size_t) (kSR * std::min (4.0f, std::max (0.2f, opt.maxSeconds)));
+    const size_t len = std::min (sig.size() - start, maxLen);
     std::vector<float> tgt (sig.begin() + (long) start, sig.begin() + (long) (start + len));
     if ((int) tgt.size() < kMinLen) tgt.resize ((size_t) kMinLen, 0.0f);
     sig.clear();
@@ -797,7 +801,9 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
     std::mt19937 rng (opt.seed);
     std::normal_distribution<float> nd (0.0f, 1.0f);
     std::uniform_real_distribution<float> ud (0.0f, 1.0f);
-    const float eff = std::max (0.05f, opt.effort);
+    // longer regions cost proportionally more per evaluation: trim the search a little (never below half)
+    const float lenSec = (float) tgt.size() / (float) kSR;
+    const float eff = std::max (0.05f, opt.effort) * std::min (1.0f, std::max (0.5f, std::sqrt (1.1f / std::max (lenSec, 0.1f))));
 
     auto evalMany = [&] (std::vector<Cand>& c)
     {

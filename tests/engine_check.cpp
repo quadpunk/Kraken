@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Quick sanity checks for engine changes: oversampler response, latency, aliasing, tune.
 #include "../Source/SynthEngine.h"
 #include <cstdio>

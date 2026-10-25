@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Synthetic "real world" targets made with DSP that is independent from the kr@ken engine
 // (own 4-pole ladder filter, FM, Karplus-Strong ...), so the analyzer cannot simply find the exact patch.
 #include <cmath>
@@ -93,11 +94,11 @@ int main()
             double x=sawBL(ph,f/SR)-sawBL(fmod(ph+0.5,1.0),f/SR); double a=min(1.0,t/0.01)*(t<0.8?1:exp(-(t-0.8)/0.05));
             double y=L.process(x*0.5,5000,0.15); y=L.process(x*0.5,5000,0.15); o[i]=(float)(y*a);} save("lead_sq_a4", o);
     }
-    { // moog-ish bass @E2 two detuned saws, 4 pole LP, env
+    { // ladder-filter bass @E2 two detuned saws, 4 pole LP, env
         int n=(int)(1.0*SR); vector<float> o(n); double p1=0,p2=0.3; Ladder L; double f0=82.41; double env=1;
         for(int i=0;i<n;++i){ double t=i/SR; env*=exp(-1.0/(0.18*SR)); p1+=f0/SR; p1-=floor(p1); p2+=f0*1.006/SR; p2-=floor(p2);
             double x=0.5*(sawBL(p1,f0/SR)+sawBL(p2,f0*1.006/SR)); double a=min(1.0,t/0.004)*(t<0.7?1:exp(-(t-0.7)/0.06))*exp(-t/1.5);
-            double fc=200+3200*env; double y=L.process(x,fc,0.45); y=L.process(x,fc,0.45); o[i]=(float)(y*a);} save("moog_bass_e2", o);
+            double fc=200+3200*env; double y=L.process(x,fc,0.45); y=L.process(x,fc,0.45); o[i]=(float)(y*a);} save("ladder_bass_e2", o);
     }
     printf("targets written\n");
 }

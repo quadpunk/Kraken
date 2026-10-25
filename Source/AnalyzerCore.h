@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // kr@ken analysis core: sample -> pitch -> evolutionary patch search.
 // Deliberately free of JUCE so it can be unit-tested and benchmarked offline (see tests/).
 #pragma once
@@ -25,6 +26,8 @@ struct AnalysisOptions
     float effort = 1.0f;       // scales generations / population (1 = shipping default)
     unsigned seed = 0xBEEF;
     int maxThreads = 8;
+    float maxSeconds = 4.0f;   // analysed length cap (the editor lets the user pick the region)
+    bool trimSilence = true;   // skip leading silence (off when the user chose the start point)
 };
 
 AnalysisResult runAnalysis (std::vector<float> mono, double sampleRate,

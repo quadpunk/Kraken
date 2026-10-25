@@ -13,3 +13,9 @@ Fixed 11-sample FX latency. Old saved states load fine (new parameters default t
 pitch), lead 3.1 -> 2.9; fm/pluck about equal; pad slightly worse at reduced effort. Not listening-tested.
 GUI/preset code was written without a JUCE install and has not been compiled: build via the GitHub workflow.
 Tests: `tests/engine_check.cpp`, `gen_targets.cpp`, `run_new.cpp`, `eval.cpp`, `calibrate.cpp` (plain g++).
+
+**Sample editor** - waveform with draggable start/stop handles, 4 s analysis cap, region preview with playhead, ANALYSE button; long samples are no longer analysed automatically. (UI code not compiled here, like the rest of the GUI.)
+
+**Licensing / names** - MIT LICENSE, THIRD_PARTY_NOTICES.md, SPDX headers; patch names that echoed commercial products renamed (e.g. Ladder Bass, String Machine, Sub Boom, Spiky Keys, 8-bit Triangle, Twin Saw ...). Fixed 4 factory parameter values that were outside 0..1. SysEx (.syx) export/import (kr@ken format, not DX7).
+
+**Compare view** - zoomed sample region and live-rendered patch drawn under each other on one time axis (level-matched). 4 s render costs about 18 ms on average (49 ms worst of the factory patches), refreshed at most every 150 ms.

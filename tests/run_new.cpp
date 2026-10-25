@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #include "../Source/AnalyzerCore.h"
 #include <chrono>
 #include <cstdio>

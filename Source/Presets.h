@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Archetype patches used as starting points by the analyzer.
 // Values are normalised 0..1; unspecified parameters keep their defaults.
 #pragma once

@@ -1,74 +1,96 @@
-# Kr@ken
+# kr@ken
 
-kr@ken is a VST beast lurking under the synthwaves, ready to devour every sample it finds and spits out a patch.
+A VST3 / standalone synth that **listens to a sample, hunts down a synth patch that sounds like it,
+and lets you reshape that patch by dragging the tentacles of a black & white kraken.**
 
-Kraken v2 — Windows VST3
+## Build
 
-Kraken is an experimental synthesizer that attempts to recreate synthesizer patches from audio samples.
+### On GitHub (easiest)
+1. Push this folder to a GitHub repo.
+2. The workflow in `.github/workflows/build.yml` builds Windows, macOS (universal) and Linux.
+3. Download the artifact from the Actions tab (`kr-at-ken-<OS>`), the plugin is in `VST3/kr@ken.vst3`.
 
-<img width="1182" height="792" alt="image" src="https://github.com/user-attachments/assets/4069a93c-c846-475e-97ba-268c33a0b892" />
+### Locally
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel
+```
+Output: `build/Kraken_artefacts/...`  (VST3 + Standalone).
+Needs CMake >= 3.22, a C++17 compiler and git (JUCE is fetched automatically).
 
-Features
+## Use
+1. Drop a sample onto the window (or **LOAD SAMPLE**). The analyzer runs in the background.
+2. When done, the best patch is loaded. **PLAY SAMPLE / PLAY PATCH** let you A/B at the detected root note.
+3. Eight tentacles = eight modules. Drag a white tip (or click anywhere in its tide pool) to set its two main
+   parameters (x / y). The **inspector** under the kraken shows every parameter of the selected module
+   (77 in total) as small sliders.
+   When a sample is loaded the kraken drags a little ship labelled SAMPLE down into its jaws, and when the
+   patch is ready it spits up a pile of floating wreckage with a PATCH sign.
+4. The 6 blobs ("kin") are alternative patches. **MUTATE** spawns new relatives of the current patch.
+5. Double-click a tip = reset that module, double-click a slider = reset that parameter. Mouse wheel = level.
+All parameters are normal host parameters, so they can be automated.
 
-- Automatic sample analysis and synth patch generation
-- 200 Built in Synth patches
-- Multi-resolution spectral analysis
-- Improved transient and envelope matching
-- Evolutionary parameter optimization
-- Multiple synthesis and modulation features
+## The engine (Source/SynthEngine.h)
+| Arm | Contents |
+|---|---|
+| OSC A | morph oscillator (sine/tri/saw/pulse+PWM), coarse/fine, 1-5 voice unison, FM input from B |
+| OSC B | morph oscillator, coarse/fine, self-feedback, ring-mod with A, analog drift |
+| HARMONIC | 1-32 partial additive oscillator: spectral tilt, odd/even, inharmonicity (bells), formant peak, octave |
+| NOISE + SUB | sub oscillator, coloured noise, tonal (pitched) noise, transient burst |
+| FILTER | multimode LP/BP/HP morph, 12/24 dB, drive, key/vel tracking, filter env amount, pitch-tracking comb (plucked strings, metal), 3-formant vowel filter |
+| AMP + PITCH | ADSR + hold, velocity sensitivity, pitch envelope (kicks, zaps) |
+| FILT ENV + LFO | filter ADSR, LFO (sine/tri/square/S&H morph) to vibrato, filter and tremolo, with fade-in |
+| FX | distortion, wavefolder, chorus, stereo delay, reverb |
 
-# How to Use Kraken
+## Sample editor (waveform at the bottom left)
+* The whole loaded sample (up to 12 s) is shown. The bright part between the two handles is the **analysis region**, at most
+  **4 s**. Drag a handle to move one end (the other end follows if you pass 4 s), drag inside the region to slide the window,
+  or click outside it to centre the window there. Ticks mark every second.
+* Under the overview strip two lanes on the same time axis let you **compare**: *SAMPLE* is the selected region zoomed in,
+  *PATCH* is the current patch rendered at its root note for the same duration, level-matched to the sample (RMS) and drawn
+  at the same scale. They update live while you move a parameter, load a preset or pick a kin blob.
+* **PLAY SAMPLE** plays only the selected region (with a moving playhead), so you can listen in before analysing.
+* **ANALYSE** analyses the region. Samples up to 4 s are analysed automatically when loaded; longer ones wait for you to
+  choose the region. Pick a single note/phrase with a stable pitch: a region containing several different notes gives a
+  poor match. Regions longer than ~1 s search slightly less per second of audio to keep analysis times reasonable.
 
-Kraken is a synthesizer plugin that analyzes an audio sample and attempts to recreate it as a synthesizer patch.
+## Presets, recent patches, export
+Second row in the header: **[<] [patch name] [>] [SAVE] [EXPORT]**.
+* **Patch name button** opens the browser: *Recent* (every analysis result and save, newest first, kept between sessions),
+  *My patches*, then the 200 factory patches in 16 categories (Acid, Sub Bass, Bass, Reese, Lead, Pluck, Keys, Pad,
+  Strings & Brass, Bells & Mallets, Arp & Seq, FX, Drums & Perc, Vocal, Texture, Chip & Retro). `<` / `>` step through them.
+  The factory patches are also exposed to the host as programs.
+* **SAVE** stores the current sound under a name (one `.krkpatch` XML file in the user patch folder).
+* **EXPORT** menu: export this patch, export all your patches as a `.krkbank`, export the sound as a 4 s WAV at its root
+  note, import a patch/bank, show the patch folder.
+Factory patches are generated by `tools/gen_factory_presets.py` (natural units: Hz, seconds, semitones). Edit the script and
+re-run it; `tests/calibrate.cpp` equalises their loudness.
 
-### Getting Started
+## How the analysis works (Source/AnalyzerCore.cpp)
+1. Resample to 44.1 kHz (the rate the plugin plays at), trim silence, estimate pitch (YIN, 30 Hz - 2 kHz, parabolic
+   refinement). Pitch hypotheses (incl. octave/fifth variants) are voted on by rendering archetypes and factory patches.
+   The remaining cents go into the patch's hidden `tune`, so it is in tune at its root note.
+2. All archetypes + 200 factory patches (+ mutants) are rendered and scored. Score = salience-weighted log-spectral distance
+   at three time/frequency resolutions (25 Hz - 16 kHz, brighter-than-target errors count more) + loudness envelope +
+   spectral motion + brightness trajectory + bass weight + harmonicity + a small prior against exotic parameters.
+3. Three independent evolution-strategy islands start from the best different seeds, the best continues, then a tune line
+   search and coordinate polish. Alternatives become the "kin" blobs.
 
-1. **Load Kraken** — Open Kraken in your DAW as a VST3 instrument.
-2. **Import a Sample** — Load the audio sample you want to recreate.
-3. **Analyze the Audio** — Start the analysis to let Kraken examine the sample's characteristics, takes 20-80 seconds, short samples work best.
-4. **Generate a Patch** — Kraken will create and optimize a synth patch to approximate the original sound.
-5. **Listen and Adjust** — Play the generated patch, compare it with the original sample, and tweak the parameters if needed.
+## Known limits
+* Pitch can be wrong for slow-attack, heavily detuned or inharmonic sounds (the patch then plays at a wrong root).
+* Sounds that need things the engine lacks (real acoustic instruments, vocals with consonants, complex
+  evolving textures) will only be approximated. Analysis uses at most the first 1.1 s of the sample.
+* Analysis time depends on your CPU cores (it uses up to 8).
 
-### Tips for Best Results
+## Licence note
+JUCE is AGPLv3 / commercial. If you plan to sell closed-source, you need a JUCE licence.
 
-* Use clean samples with minimal background noise.
-* Short, isolated notes generally produce better results than complex audio recordings.
-* Experiment with different samples to explore what Kraken can recreate.
+## SysEx export
+EXPORT -> *Export this patch as MIDI SysEx* / *Export all my patches as SysEx* writes `.syx` files in kr@ken's own format
+(see `Source/SysEx.h`; manufacturer ID 0x7D). They can be stored/sent with any SysEx librarian and re-imported with
+*Import patch or bank*. They are **not** DX7 (or any other synth's) patches: a DX7 is a six-operator FM synth and cannot
+represent these sounds.
 
-**Note:** Kraken is experimental. Results may vary depending on the sample, and generated patches may not perfectly match the original audio.
-
-# Installation
-
-1. Download "Release.zip" from the Release section.
-2. Extract the ZIP file.
-3. Install "Kraken.vst3" in your VST3 plugins directory, typically "C:\Program Files\Common Files\VST3".
-4. Restart your DAW and rescan your plugins if necessary.
-
-Standalone
-1. Download "Kraken-Windows-xxx.zip" from the Assets section below.
-2. Run "kr@ken exe"
-
-### How the Synth Engine Works
-
-Kraken’s synth engine combines multiple sound-generation techniques to recreate the character of an audio sample.
-
-* **Oscillators:** Generate the basic waveforms that form the sound.
-* **Additive synthesis and FM:** Shape harmonic content and create more complex tones.
-* **Unison:** Layers multiple voices to create a fuller sound.
-* **Filter and envelopes:** Shape the tone and control how the sound evolves over time.
-* **Noise and modulation:** Add texture and movement.
-* **Effects:** Further refine the output.
-
-The analysis engine searches for suitable parameter settings and optimizes the synth patch to approximate the original sample.
-
-
-Status
-
-Experimental build. Audio matching quality may vary depending on the input sample.
-Coded using Claude.
-
-Platform
-
-Windows — VST3
-
-Please report bugs and share audio examples where the generated patch differs significantly from the original.
+## License
+MIT, see [LICENSE](LICENSE). Compiled binaries include JUCE (AGPLv3 / commercial) and the VST3 SDK, see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before you distribute them.

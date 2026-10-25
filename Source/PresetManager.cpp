@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: MIT
 #include "PresetManager.h"
 #include "FactoryPresets.h"
+#include "SysEx.h"
 
 namespace kraken
 {
@@ -117,9 +119,46 @@ bool PresetManager::exportBank (const juce::File& file, const std::vector<Preset
     return file.replaceWithText (bank.toString());
 }
 
+bool PresetManager::exportSyx (const juce::File& file, const std::vector<PresetEntry>& entries)
+{
+    std::vector<uint8_t> bytes;
+    for (const auto& e : entries)
+    {
+        syx::Data d;
+        d.name = e.name.toStdString();
+        d.root = e.root;
+        d.tuneCents = juce::roundToInt (e.patch.tune * 100.0f);
+        d.level = e.patch.level;
+        d.values.assign (e.patch.p.begin(), e.patch.p.end());
+        const auto m = syx::encode (d);
+        bytes.insert (bytes.end(), m.begin(), m.end());
+    }
+    return ! bytes.empty() && file.replaceWithData (bytes.data(), bytes.size());
+}
+
 std::vector<PresetEntry> PresetManager::importFile (const juce::File& file)
 {
     std::vector<PresetEntry> out;
+    if (file.hasFileExtension ("syx"))
+    {
+        juce::MemoryBlock mb;
+        if (! file.loadFileAsData (mb)) return out;
+        const auto* p = static_cast<const uint8_t*> (mb.getData());
+        for (const auto& d : syx::decodeAll (std::vector<uint8_t> (p, p + mb.getSize())))
+        {
+            PresetEntry e;
+            e.name = juce::String (d.name);
+            e.category = "Imported";
+            e.root = juce::jlimit (0, 127, d.root);
+            e.patch = defaultPatch();
+            for (size_t i = 0; i < (size_t) kNumParams && i < d.values.size(); ++i)
+                e.patch.p[i] = juce::jlimit (0.0f, 1.0f, d.values[i]);
+            e.patch.level = juce::jlimit (0.0f, 1.0f, d.level);
+            e.patch.tune = (float) d.tuneCents * 0.01f;
+            out.push_back (std::move (e));
+        }
+        return out;
+    }
     auto xml = juce::parseXML (file);
     if (xml == nullptr) return out;
     PresetEntry e;

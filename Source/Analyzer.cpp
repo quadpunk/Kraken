@@ -1,10 +1,12 @@
+// SPDX-License-Identifier: MIT
 #include "Analyzer.h"
 
 namespace kraken
 {
-void Analyzer::analyse (std::vector<float> mono, double sampleRate)
+void Analyzer::analyse (std::vector<float> mono, double sampleRate, const AnalysisOptions& options)
 {
     stopThread (10000);
+    opts = options;
     input = std::move (mono);
     inputSr = sampleRate;
     startThread();
@@ -16,7 +18,8 @@ void Analyzer::run()
 
     auto result = runAnalysis (std::move (input), inputSr,
                                [this] { return threadShouldExit(); },
-                               [this] (float p) { if (onProgress) onProgress (p); });
+                               [this] (float p) { if (onProgress) onProgress (p); },
+                               opts);
     input.clear();
     if (! threadShouldExit() && onFinished) onFinished (std::move (result));
 }

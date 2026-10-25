@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 
 #include "Common.h"
@@ -14,7 +15,7 @@ public:
     Analyzer() : juce::Thread ("kr@ken analyzer") {}
     ~Analyzer() override { stopThread (10000); }
 
-    void analyse (std::vector<float> mono, double sampleRate);
+    void analyse (std::vector<float> mono, double sampleRate, const AnalysisOptions& options = {});
 
     std::function<void (float)> onProgress;            // called from analysis thread
     std::function<void (AnalysisResult)> onFinished;   // called from analysis thread
@@ -24,6 +25,7 @@ private:
 
     std::vector<float> input;
     double inputSr = 44100.0;
+    AnalysisOptions opts;
 };
 
 } // namespace kraken

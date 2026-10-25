@@ -1,4 +1,6 @@
+// SPDX-License-Identifier: MIT
 #include "PluginProcessor.h"
+#include <cstring>
 #include "PluginEditor.h"
 
 using namespace kraken;
@@ -83,7 +85,7 @@ void KrakenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     {
         synth.allOff();
         previewNote = -1;
-        samplePos = 0.0;
+        samplePos = (double) selStartSamp.load();
         samplePlaying = true;
     }
     else if (cmd == 2)
@@ -126,7 +128,7 @@ void KrakenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         if (lock.isLocked() && ! sampleData.empty())
         {
             const double ratio = sampleSr / currentSr;
-            const int size = (int) sampleData.size();
+            const int size = std::min ((int) sampleData.size(), std::max (selEndSamp.load(), 2));
             for (int i = 0; i < n; ++i)
             {
                 const int i0 = (int) samplePos;
@@ -141,6 +143,7 @@ void KrakenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         else if (! lock.isLocked()) {}
         else samplePlaying = false;
     }
+    playhead.store (samplePlaying ? (float) (samplePos / sampleSr) : -1.0f);
 }
 
 //==============================================================================
@@ -216,10 +219,11 @@ void KrakenProcessor::loadSampleFile (const juce::File& file)
     }
 
     // thumbnail
-    thumb.assign (400, 0.0f);
+    constexpr int kThumb = 1600;
+    thumb.assign (kThumb, 0.0f);
     for (int i = 0; i < numSamples; ++i)
     {
-        const size_t b = std::min<size_t> (399, (size_t) ((juce::int64) i * 400 / numSamples));
+        const size_t b = std::min<size_t> (kThumb - 1, (size_t) ((juce::int64) i * kThumb / numSamples));
         thumb[b] = std::max (thumb[b], std::abs (mono[(size_t) i]));
     }
     float mx = 0.0001f;
@@ -233,14 +237,129 @@ void KrakenProcessor::loadSampleFile (const juce::File& file)
         sampleData.swap (copy);
         sampleSr = reader->sampleRate;
     }
-    sampleSeconds.store ((float) numSamples / (float) reader->sampleRate);
-
     sampleName = file.getFileName();
+    matchPct = 0.0f;
+    progress.store (0.0f);
+    statusMessage = {};
+
+    analyzer.stopThread (10000);
+    analysing.store (false);
+    fullMono = std::move (mono);
+    fullSr = reader->sampleRate;
+    const float len = getSampleLength();
+    selStart = 0.0f;
+    selEnd = std::min (len, kMaxAnalysisSec);
+    setSelection (selStart, selEnd, false);
+
+    if (len <= kMaxAnalysisSec + 0.05f)
+        analyseSelection();          // short sample: analyse it right away, as before
+    else
+        statusMessage = "sample is " + juce::String (len, 1) + " s: drag the window on the waveform, listen, then press ANALYSE (max 4 s)";
+}
+
+void KrakenProcessor::setSelection (float a, float b, bool startMoved)
+{
+    const float len = getSampleLength();
+    if (len <= 0.0f) return;
+    constexpr float kMin = 0.05f;
+    a = juce::jlimit (0.0f, std::max (0.0f, len - kMin), a);
+    b = juce::jlimit (std::min (len, a + kMin), len, b);
+    if (b - a > kMaxAnalysisSec)
+    {
+        if (startMoved) b = a + kMaxAnalysisSec; else a = b - kMaxAnalysisSec;
+    }
+    selStart = std::max (0.0f, a);
+    selEnd = std::min (len, b);
+    selStartSamp.store ((int) (selStart * fullSr));
+    selEndSamp.store ((int) (selEnd * fullSr));
+    sampleSeconds.store (selEnd - selStart);
+}
+
+void KrakenProcessor::updatePreviews()
+{
+    if (fullMono.empty())
+    {
+        if (! regionThumb.empty() || ! patchThumb.empty()) { regionThumb.clear(); patchThumb.clear(); previewKey = regionKey = 0; }
+        return;
+    }
+
+    const auto patch = getPatch();
+    const int root = rootNote.load();
+    auto mix = [] (juce::uint64 h, juce::uint32 v) { h ^= v; h *= 1099511628211ULL; return h; };
+    auto bits = [] (float f) { juce::uint32 u; std::memcpy (&u, &f, sizeof (u)); return u; };
+
+    juce::uint64 rk = 1469598103934665603ULL;
+    rk = mix (rk, (juce::uint32) selStartSamp.load());
+    rk = mix (rk, (juce::uint32) selEndSamp.load());
+    juce::uint64 key = rk;
+    key = mix (key, (juce::uint32) root);
+    key = mix (key, bits (patch.level));
+    key = mix (key, bits (patch.tune));
+    for (float v : patch.p) key = mix (key, bits (v));
+
+    if (key == previewKey && ! regionThumb.empty()) return;
+    const auto now = juce::Time::getMillisecondCounter();
+    if (now - lastPreviewMs < 150) return;      // rate limit while sliders are being dragged
+    lastPreviewMs = now;
+    previewKey = key;
+
+    constexpr int kBins = 1000;
+    const auto i0 = (size_t) juce::jlimit (0, (int) fullMono.size() - 1, (int) (selStart * fullSr));
+    const auto i1 = (size_t) juce::jlimit ((int) i0 + 1, (int) fullMono.size(), (int) (selEnd * fullSr));
+    const size_t n = i1 - i0;
+
+    if (rk != regionKey || regionThumb.empty())
+    {
+        regionKey = rk;
+        regionThumb.assign (kBins, 0.0f);
+        double e = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const float v = fullMono[i0 + i];
+            const auto b = std::min<size_t> (kBins - 1, i * kBins / n);
+            regionThumb[b] = std::max (regionThumb[b], std::abs (v));
+            e += (double) v * v;
+        }
+        regionPeak = 1.0e-4f;
+        for (float v : regionThumb) regionPeak = std::max (regionPeak, v);
+        regionRms = (float) std::sqrt (e / (double) n);
+        for (auto& v : regionThumb) v /= regionPeak;
+    }
+
+    // patch at its root note, same duration as the region (note held for 60 %, like the analysis assumes)
+    constexpr double sr = 44100.0;
+    const int N = juce::jlimit (2205, (int) (4.05 * sr), (int) ((double) n / fullSr * sr));
+    const float f0 = 440.0f * std::pow (2.0f, (float) (root - 69) / 12.0f);
+    std::vector<float> out;
+    renderOffline (patch, sr, f0, N, (int) (0.6 * N), out);
+    double e = 0;
+    for (float v : out) e += (double) v * v;
+    const float rms = (float) std::sqrt (e / (double) N);
+    const float g = rms > 1.0e-6f ? std::min (50.0f, regionRms / rms) : 0.0f;
+
+    patchThumb.assign (kBins, 0.0f);
+    for (int i = 0; i < N; ++i)
+    {
+        const auto b = std::min<size_t> (kBins - 1, (size_t) i * kBins / (size_t) N);
+        patchThumb[b] = std::max (patchThumb[b], std::abs (out[(size_t) i]) * g / regionPeak);
+    }
+}
+
+void KrakenProcessor::analyseSelection()
+{
+    if (fullMono.empty() || analysing.load()) return;
+    const auto i0 = (size_t) juce::jlimit (0, (int) fullMono.size() - 1, (int) (selStart * fullSr));
+    const auto i1 = (size_t) juce::jlimit ((int) i0 + 1, (int) fullMono.size(), (int) (selEnd * fullSr));
+    std::vector<float> region (fullMono.begin() + (long) i0, fullMono.begin() + (long) i1);
+
+    AnalysisOptions opt;
+    opt.maxSeconds = kMaxAnalysisSec;
+    opt.trimSilence = selStart < 0.01f;   // an explicit start point is respected as chosen
     matchPct = 0.0f;
     progress.store (0.0f);
     analysing.store (true);
     statusMessage = {};
-    analyzer.analyse (std::move (mono), reader->sampleRate);
+    analyzer.analyse (std::move (region), fullSr, opt);
 }
 
 void KrakenProcessor::applyResult (const AnalysisResult& r)

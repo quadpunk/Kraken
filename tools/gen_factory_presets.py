@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Generates Source/FactoryPresets.h (the 200 factory patches of kr@ken).
+"""SPDX-License-Identifier: MIT
+
+Generates Source/FactoryPresets.h (the 200 factory patches of kr@ken).
 
 Patches are written in natural units (Hz, seconds, semitones, cents) and converted to the engine's
 normalised 0..1 parameters, so they stay readable and easy to tweak.  After editing, run:
@@ -61,7 +63,7 @@ def add(cat, name, root, **kw):
     PATCHES.append((cat, name, root, d))
 
 # =============================================================================================
-# ACID / 303  -- saw or pulse, 24 dB resonant LP, big filter envelope, short gate
+# ACID -- saw or pulse, 24 dB resonant LP, big filter envelope, short gate
 # =============================================================================================
 def acid(name, base, octv, fd, res, shape=SAW, slope=1.0, ad=.6, **kw):
     d = dict(A_SHAPE=shape, A_LEVEL=.8, F_CUTOFF=cut(base), F_RES=res, F_SLOPE=slope, F_ENVAMT=fo(octv),
@@ -95,8 +97,8 @@ sub('Round Soft Bass', A_SHAPE=TRI, F_CUTOFF=cut(500), F_RES=.05, F_SLOPE=.5, OU
 sub('Deep Tri Bass', A_SHAPE=TRI, A_LEVEL=.8, SUB_LEVEL=.45, SUB_SHAPE=.1, F_CUTOFF=cut(900))
 sub('Hollow Sub', A_SHAPE=SIN, SUB_LEVEL=.5, SUB_SHAPE=.5, A_COARSE=co(12), A_LEVEL=.35, F_CUTOFF=cut(600), F_RES=.3)
 sub('Boom Sub', PITCH_AMT=pen(12), PITCH_DEC=pdec(.06), AMP_D=ed(1.2), AMP_S=.2, A_LEVEL=.9)
-sub('808 Long', PITCH_AMT=pen(14), PITCH_DEC=pdec(.05), AMP_D=ed(2.2), AMP_S=0, AMP_R=ed(.3), DIST_AMT=.12, A_LEVEL=.9)
-sub('808 Short', PITCH_AMT=pen(18), PITCH_DEC=pdec(.04), AMP_D=ed(.5), AMP_S=0, AMP_R=ed(.1), A_LEVEL=.9)
+sub('Sub Boom Long', PITCH_AMT=pen(14), PITCH_DEC=pdec(.05), AMP_D=ed(2.2), AMP_S=0, AMP_R=ed(.3), DIST_AMT=.12, A_LEVEL=.9)
+sub('Sub Boom Short', PITCH_AMT=pen(18), PITCH_DEC=pdec(.04), AMP_D=ed(.5), AMP_S=0, AMP_R=ed(.1), A_LEVEL=.9)
 sub('Sub Pluck', AMP_D=ed(.35), AMP_S=0, PITCH_AMT=pen(5), PITCH_DEC=pdec(.03), NOISE_LEVEL=.2, NOISE_TRANS=1, NOISE_TDEC=.1)
 sub('Dub Sub', A_SHAPE=.1, DLY_MIX=.25, DLY_TIME=dly(.375), DLY_FB=.5, REV_MIX=.12, F_CUTOFF=cut(500))
 sub('Sine Octave', A_SHAPE=SIN, SUB_LEVEL=.6, SUB_SHAPE=0, A_LEVEL=.6, AMP_S=1.0)
@@ -111,7 +113,7 @@ def bass(name, **kw):
     d = dict(A_SHAPE=SAW, A_LEVEL=.8, F_CUTOFF=cut(500), F_RES=.2, F_SLOPE=1.0, F_ENVAMT=fo(2.5), FE_D=fdec(.25), FE_S=.15,
              AMP_A=ea(.004), AMP_D=ed(.5), AMP_S=.8, AMP_R=ed(.1), F_KEYTRK=.4, F_VEL=.4)
     d.update(kw); add('Bass', name, 36, **d)
-bass('Moog Bass', B_LEVEL=.7, B_FINE=fine(8), SUB_LEVEL=.25, F_CUTOFF=cut(380), F_RES=.3, F_ENVAMT=fo(3))
+bass('Ladder Bass', B_LEVEL=.7, B_FINE=fine(8), SUB_LEVEL=.25, F_CUTOFF=cut(380), F_RES=.3, F_ENVAMT=fo(3))
 bass('Fat Saw Bass', A_UNI=uni(3), A_UNIDET=udet(8), SUB_LEVEL=.3, F_CUTOFF=cut(550))
 bass('Pulse Bass', A_SHAPE=PUL, A_PW=.3, F_CUTOFF=cut(420), F_ENVAMT=fo(2.0), SUB_LEVEL=.2)
 bass('Mono Funk', F_CUTOFF=cut(300), F_RES=.35, F_ENVAMT=fo(3.2), FE_D=fdec(.12), FE_S=0, AMP_D=ed(.3), AMP_S=.5)
@@ -127,20 +129,20 @@ bass('Pluck Bass', F_CUTOFF=cut(260), F_ENVAMT=fo(3.6), FE_D=fdec(.15), FE_S=0, 
 bass('Soft Pad Bass', A_SHAPE=TRI, B_SHAPE=SAW, B_LEVEL=.35, F_CUTOFF=cut(380), F_ENVAMT=fo(1.0), AMP_A=ea(.05), CHO_MIX=.3, OUT_TONE=.7)
 
 # =============================================================================================
-# REESE / WOBBLE / NEURO
+# TWIN-SAW / WOBBLE / NEURO
 # =============================================================================================
-def reese(name, **kw):
+def twinsaw(name, **kw):
     d = dict(A_SHAPE=SAW, A_LEVEL=.7, B_SHAPE=SAW, B_LEVEL=.7, B_FINE=fine(18), A_FINE=fine(-14), F_CUTOFF=cut(520), F_RES=.25,
              F_SLOPE=1.0, SUB_LEVEL=.35, AMP_A=ea(.01), AMP_S=.9, AMP_R=ed(.15), CHO_MIX=.3, CHO_DEPTH=.4)
-    d.update(kw); add('Reese', name, 33, **d)
-reese('Reese Classic')
-reese('Reese Dark', F_CUTOFF=cut(300), DIST_AMT=.12, OUT_TONE=.65)
-reese('Reese Wide', A_UNI=uni(3), A_UNIDET=udet(10), CHO_MIX=.5, F_CUTOFF=cut(650))
-reese('Neuro Growl', F_RES=.6, LFO_FILT=.5, LFO_RATE=lfo(6), LFO_SHAPE=.4, DIST_AMT=.3, F_DRIVE=.3)
-reese('Wobble Bass', LFO_FILT=.6, LFO_RATE=lfo(2.2), LFO_SHAPE=.1, F_RES=.45, F_CUTOFF=cut(380))
-reese('Wub Slow', LFO_FILT=.75, LFO_RATE=lfo(1.0), LFO_SHAPE=.1, F_RES=.5, F_CUTOFF=cut(300), DIST_AMT=.1)
-reese('Wub Fast', LFO_FILT=.5, LFO_RATE=lfo(8), LFO_SHAPE=.3, F_RES=.4, F_CUTOFF=cut(420))
-reese('Dubstep Growl', B_COARSE=co(12), B_FINE=fine(-6), F_RES=.65, LFO_FILT=.55, LFO_RATE=lfo(4), LFO_SHAPE=.6, DIST_AMT=.35, DIST_FOLD=.15)
+    d.update(kw); add('Growl & Wobble', name, 33, **d)
+twinsaw('Twin Saw Classic')
+twinsaw('Twin Saw Dark', F_CUTOFF=cut(300), DIST_AMT=.12, OUT_TONE=.65)
+twinsaw('Twin Saw Wide', A_UNI=uni(3), A_UNIDET=udet(10), CHO_MIX=.5, F_CUTOFF=cut(650))
+twinsaw('Neuro Growl', F_RES=.6, LFO_FILT=.5, LFO_RATE=lfo(6), LFO_SHAPE=.4, DIST_AMT=.3, F_DRIVE=.3)
+twinsaw('Wobble Bass', LFO_FILT=.6, LFO_RATE=lfo(2.2), LFO_SHAPE=.1, F_RES=.45, F_CUTOFF=cut(380))
+twinsaw('Wub Slow', LFO_FILT=.75, LFO_RATE=lfo(1.0), LFO_SHAPE=.1, F_RES=.5, F_CUTOFF=cut(300), DIST_AMT=.1)
+twinsaw('Wub Fast', LFO_FILT=.5, LFO_RATE=lfo(8), LFO_SHAPE=.3, F_RES=.4, F_CUTOFF=cut(420))
+twinsaw('Dubstep Growl', B_COARSE=co(12), B_FINE=fine(-6), F_RES=.65, LFO_FILT=.55, LFO_RATE=lfo(4), LFO_SHAPE=.6, DIST_AMT=.35, DIST_FOLD=.15)
 
 # =============================================================================================
 # LEADS
@@ -184,7 +186,7 @@ pluck('Nylon Guitar', A_SHAPE=TRI, B_SHAPE=SAW, B_LEVEL=.3, COMB_MIX=.5, COMB_FB
 pluck('Harp Pluck', A_SHAPE=TRI, C_LEVEL=.4, C_TILT=.5, C_COUNT=.3, AMP_D=ed(1.4), F_CUTOFF=cut(4000), REV_MIX=.3, REV_SIZE=.8)
 pluck('Pizzicato', A_SHAPE=TRI, AMP_D=ed(.12), F_CUTOFF=cut(1500), COMB_MIX=.3, COMB_FB=.7)
 pluck('Kalimba', A_SHAPE=SIN, B_SHAPE=SIN, B_COARSE=co(19), B_LEVEL=.25, AMP_D=ed(.7), F_CUTOFF=cut(5000), REV_MIX=.2)
-pluck('Marimba', A_SHAPE=SIN, B_SHAPE=SIN, B_COARSE=co(28), B_LEVEL=.25, AMP_D=ed(.45), F_CUTOFF=cut(6000), PITCH_AMT=pen(.5), NOISE_LEVEL=.1, NOISE_TRANS=1, NOISE_TDEC=.05)
+pluck('Marimba', A_SHAPE=SIN, B_SHAPE=SIN, B_COARSE=co(24), B_LEVEL=.25, AMP_D=ed(.45), F_CUTOFF=cut(6000), PITCH_AMT=pen(.5), NOISE_LEVEL=.1, NOISE_TRANS=1, NOISE_TDEC=.05)
 pluck('Koto', A_SHAPE=PUL, A_PW=.4, F_CUTOFF=cut(1400), F_RES=.35, COMB_MIX=.4, COMB_FB=.9, AMP_D=ed(.8), PITCH_AMT=pen(1.5), PITCH_DEC=pdec(.05))
 pluck('Banjo', A_SHAPE=PUL, A_PW=.25, F_CUTOFF=cut(2800), F_ENVAMT=fo(2), COMB_MIX=.35, COMB_FB=.88, AMP_D=ed(.4), F_MODE=.15)
 pluck('Short Pluck', AMP_D=ed(.1), FE_D=fdec(.08), F_CUTOFF=cut(700))
@@ -200,7 +202,7 @@ def keys(name, **kw):
 keys('Soft EP', B_SHAPE=SIN, B_COARSE=co(12), A_FM=.22, B_LEVEL=0, AMP_D=ed(1.6), CHO_MIX=.35, CHO_RATE=lfo(.8), REV_MIX=.15)
 keys('Tine EP', B_SHAPE=SIN, B_COARSE=co(19), A_FM=.3, B_LEVEL=0, AMP_D=ed(1.3), NOISE_LEVEL=.1, NOISE_TRANS=1, NOISE_TDEC=.1, CHO_MIX=.3)
 keys('Bark EP', B_SHAPE=SIN, B_COARSE=co(12), A_FM=.45, B_LEVEL=0, AMP_D=ed(.9), DIST_AMT=.1, CHO_MIX=.25)
-keys('Clav', A_SHAPE=PUL, A_PW=.3, A_LEVEL=.75, F_CUTOFF=cut(1800), F_RES=.2, F_ENVAMT=fo(2.2), FE_D=fdec(.1), FE_S=.1, AMP_D=ed(.25), AMP_S=.1, F_MODE=.2)
+keys('Spiky Keys', A_SHAPE=PUL, A_PW=.3, A_LEVEL=.75, F_CUTOFF=cut(1800), F_RES=.2, F_ENVAMT=fo(2.2), FE_D=fdec(.1), FE_S=.1, AMP_D=ed(.25), AMP_S=.1, F_MODE=.2)
 keys('Drawbar Organ', A_LEVEL=0, C_LEVEL=.85, C_TILT=.4, C_COUNT=.22, C_ODDEVEN=.5, AMP_A=ea(.004), AMP_D=ed(.1), AMP_S=1.0, AMP_R=ed(.05), LFO_TREM=.15, LFO_RATE=lfo(6.5), CHO_MIX=.3)
 keys('Perc Organ', A_LEVEL=0, C_LEVEL=.85, C_TILT=.45, C_COUNT=.2, AMP_S=1.0, AMP_D=ed(.1), AMP_R=ed(.05), NOISE_LEVEL=.25, NOISE_TRANS=1, NOISE_TDEC=.1, NOISE_TONAL=.8, CHO_MIX=.25)
 keys('Rock Organ', A_LEVEL=0, C_LEVEL=.9, C_TILT=.6, C_COUNT=.3, C_ODDEVEN=.35, AMP_S=1.0, AMP_D=ed(.1), AMP_R=ed(.06), DIST_AMT=.25, CHO_MIX=.3, F_CUTOFF=cut(9000), OUT_TONE=.85)
@@ -247,7 +249,7 @@ def ens(name, **kw):
              CHO_MIX=.5, REV_MIX=.25, LFO_VIB=vib(.1), LFO_RATE=lfo(5.2), LFO_FADE=.5, F_KEYTRK=.6)
     d.update(kw); add('Strings & Brass', name, 60, **d)
 ens('Strings Ensemble')
-ens('Solina', B_SHAPE=SAW, B_LEVEL=.5, B_COARSE=co(12), B_FINE=fine(12), CHO_MIX=.8, CHO_DEPTH=.7, F_CUTOFF=cut(2800))
+ens('String Machine', B_SHAPE=SAW, B_LEVEL=.5, B_COARSE=co(12), B_FINE=fine(12), CHO_MIX=.8, CHO_DEPTH=.7, F_CUTOFF=cut(2800))
 ens('Cello Synth', A_UNI=uni(2), A_UNIDET=udet(5), F_CUTOFF=cut(1300), AMP_A=ea(.15), LFO_VIB=vib(.15), SUB_LEVEL=.15, A_COARSE=co(-12))
 ens('Violin Synth', A_UNI=uni(2), A_UNIDET=udet(6), F_CUTOFF=cut(5500), AMP_A=ea(.12), LFO_VIB=vib(.22), LFO_FADE=.35, A_COARSE=co(12))
 ens('Brass Section', A_UNI=uni(3), A_UNIDET=udet(8), F_CUTOFF=cut(1300), F_ENVAMT=fo(2.3), FE_A=ea(.12), FE_D=fdec(.3), FE_S=.7, AMP_A=ea(.06), CHO_MIX=.2, LFO_VIB=0)
@@ -310,7 +312,7 @@ fx('Sweep', A_LEVEL=.5, A_UNI=uni(4), A_UNIDET=udet(25), F_CUTOFF=cut(200), F_RE
 fx('Wind', NOISE_LEVEL=.8, NOISE_COLOR=.45, F_MODE=BP, F_CUTOFF=cut(900), F_RES=.55, LFO_FILT=.5, LFO_RATE=lfo(.25), LFO_SHAPE=.1, AMP_A=ea(1.5), AMP_S=1.0, AMP_R=ed(2), REV_MIX=.5)
 fx('Ocean', NOISE_LEVEL=.9, NOISE_COLOR=.25, F_CUTOFF=cut(900), F_RES=.1, LFO_TREM=.7, LFO_RATE=lfo(.18), LFO_SHAPE=0, LFO_FADE=0, AMP_A=ea(1.8), AMP_S=1.0, AMP_R=ed(3), REV_MIX=.4)
 fx('Alien', A_LEVEL=.6, A_SHAPE=SIN, B_SHAPE=SIN, B_COARSE=co(13.5), B_RING=.7, LFO_VIB=vib(1.2), LFO_RATE=lfo(7), LFO_SHAPE=.3, F_CUTOFF=cut(6000), A_FM=.5, REV_MIX=.4)
-fx('Siren', A_LEVEL=.8, A_SHAPE=PUL, LFO_VIB=vib(5), LFO_RATE=lfo(.7), LFO_SHAPE=.1, LFO_FADE=0, F_CUTOFF=cut(3500), AMP_A=ea(.3), AMP_S=1.0, AMP_R=ed(.6))
+fx('Siren', A_LEVEL=.8, A_SHAPE=PUL, LFO_VIB=vib(4), LFO_RATE=lfo(.7), LFO_SHAPE=.1, LFO_FADE=0, F_CUTOFF=cut(3500), AMP_A=ea(.3), AMP_S=1.0, AMP_R=ed(.6))
 fx('Impact', A_LEVEL=.9, A_SHAPE=SIN, A_COARSE=co(-12), PITCH_AMT=pen(24), PITCH_DEC=pdec(.25), NOISE_LEVEL=.5, NOISE_COLOR=.3, NOISE_TRANS=1, NOISE_TDEC=.5, AMP_D=ed(2.0), AMP_S=0, AMP_R=ed(1.5), REV_MIX=.6, REV_SIZE=.95)
 fx('Rumble', NOISE_LEVEL=.9, NOISE_COLOR=.05, F_CUTOFF=cut(160), F_SLOPE=1.0, SUB_LEVEL=.4, AMP_A=ea(.6), AMP_S=1.0, AMP_R=ed(1.5), LFO_TREM=.3, LFO_RATE=lfo(.5))
 fx('Glitch', A_LEVEL=.7, A_SHAPE=PUL, F_CUTOFF=cut(1500), F_RES=.7, LFO_FILT=.9, LFO_RATE=lfo(14), LFO_SHAPE=1.0, LFO_FADE=0, DIST_AMT=.2, AMP_S=1.0, REV_MIX=.1)
@@ -322,14 +324,14 @@ fx('Whoosh', NOISE_LEVEL=.9, NOISE_COLOR=.6, F_MODE=BP, F_CUTOFF=cut(500), F_RES
 def drum(name, root=48, **kw):
     d = dict(A_SHAPE=SIN, A_LEVEL=.9, AMP_A=0, AMP_D=ed(.3), AMP_S=0, AMP_R=ed(.08), AMP_VEL=.8, F_KEYTRK=.5)
     d.update(kw); add('Drums & Perc', name, root, **d)
-drum('Kick 808', 36, PITCH_AMT=pen(30), PITCH_DEC=pdec(.045), AMP_D=ed(.7), NOISE_LEVEL=.15, NOISE_TRANS=1, NOISE_TDEC=.12)
+drum('Kick Sub Boom', 36, PITCH_AMT=pen(30), PITCH_DEC=pdec(.045), AMP_D=ed(.7), NOISE_LEVEL=.15, NOISE_TRANS=1, NOISE_TDEC=.12)
 drum('Kick Punch', 36, PITCH_AMT=pen(36), PITCH_DEC=pdec(.03), AMP_D=ed(.35), NOISE_LEVEL=.35, NOISE_TRANS=1, NOISE_TDEC=.1, F_CUTOFF=cut(9000), DIST_AMT=.15)
 drum('Kick Hard', 36, A_SHAPE=.1, PITCH_AMT=pen(34), PITCH_DEC=pdec(.035), AMP_D=ed(.4), DIST_AMT=.45, NOISE_LEVEL=.3, NOISE_TRANS=1, NOISE_TDEC=.08)
 drum('Snare Analog', 48, A_SHAPE=TRI, A_LEVEL=.55, PITCH_AMT=pen(12), PITCH_DEC=pdec(.04), NOISE_LEVEL=.75, NOISE_COLOR=.65, AMP_D=ed(.22), F_CUTOFF=cut(7500), F_RES=.1, REV_MIX=.1)
 drum('Snare Noise', 48, A_LEVEL=.2, NOISE_LEVEL=.9, NOISE_COLOR=.6, AMP_D=ed(.28), F_MODE=.4, F_CUTOFF=cut(3500), F_RES=.2, REV_MIX=.18)
 drum('Clap', 60, A_LEVEL=0, NOISE_LEVEL=.9, NOISE_COLOR=.55, F_MODE=BP, F_CUTOFF=cut(1500), F_RES=.35, AMP_D=ed(.25), NOISE_TRANS=.6, NOISE_TDEC=.3, REV_MIX=.3, DLY_MIX=.12, DLY_TIME=dly(.03))
-drum('Hat Closed', 60, A_LEVEL=0, NOISE_LEVEL=.85, NOISE_COLOR=1.0, F_MODE=HP, F_CUTOFF=cut(7500), AMP_D=ed(.05), B_LEVEL=.3, B_SHAPE=PUL, B_COARSE=co(30), B_RING=.5)
-drum('Hat Open', 60, A_LEVEL=0, NOISE_LEVEL=.85, NOISE_COLOR=1.0, F_MODE=HP, F_CUTOFF=cut(7000), AMP_D=ed(.4), AMP_R=ed(.25), B_LEVEL=.3, B_SHAPE=PUL, B_COARSE=co(30), B_RING=.5)
+drum('Hat Closed', 60, A_LEVEL=0, NOISE_LEVEL=.85, NOISE_COLOR=1.0, F_MODE=HP, F_CUTOFF=cut(7500), AMP_D=ed(.05), B_LEVEL=.3, B_SHAPE=PUL, B_COARSE=co(24), B_RING=.5)
+drum('Hat Open', 60, A_LEVEL=0, NOISE_LEVEL=.85, NOISE_COLOR=1.0, F_MODE=HP, F_CUTOFF=cut(7000), AMP_D=ed(.4), AMP_R=ed(.25), B_LEVEL=.3, B_SHAPE=PUL, B_COARSE=co(24), B_RING=.5)
 drum('Tom Low', 41, PITCH_AMT=pen(14), PITCH_DEC=pdec(.07), AMP_D=ed(.6), NOISE_LEVEL=.1, NOISE_TRANS=1, NOISE_TDEC=.1)
 drum('Tom High', 55, A_SHAPE=.1, PITCH_AMT=pen(10), PITCH_DEC=pdec(.05), AMP_D=ed(.3), NOISE_LEVEL=.1, NOISE_TRANS=1, NOISE_TDEC=.1)
 drum('Rim Shot', 60, A_SHAPE=PUL, A_LEVEL=.5, NOISE_LEVEL=.4, NOISE_COLOR=.7, F_MODE=BP, F_CUTOFF=cut(1800), F_RES=.4, AMP_D=ed(.05))
@@ -378,15 +380,18 @@ chip('Chip Square', A_PW=.5)
 chip('Chip Lead', A_PW=.25, LFO_VIB=vib(.3), LFO_RATE=lfo(6), LFO_FADE=.3)
 chip('Chip Bass', A_PW=.5, A_COARSE=co(-12), AMP_S=.9)
 chip('Chip Noise Hat', A_LEVEL=0, NOISE_LEVEL=.8, NOISE_COLOR=1.0, F_MODE=HP, F_CUTOFF=cut(6000), AMP_D=ed(.06), AMP_S=0)
-chip('NES Triangle', A_SHAPE=TRI, A_LEVEL=.85)
-chip('Gameboy Pulse', A_PW=.125 , AMP_D=ed(.4), AMP_S=.6)
-chip('C64 Pulse', A_PW=.35, B_SHAPE=PUL, B_PW=.65, B_LEVEL=.5, B_FINE=fine(4), LFO_RATE=lfo(1.5), F_CUTOFF=cut(7000), F_MODE=.1)
+chip('8-bit Triangle', A_SHAPE=TRI, A_LEVEL=.85)
+chip('Handheld Pulse', A_PW=.125 , AMP_D=ed(.4), AMP_S=.6)
+chip('Micro Pulse', A_PW=.35, B_SHAPE=PUL, B_PW=.65, B_LEVEL=.5, B_FINE=fine(4), LFO_RATE=lfo(1.5), F_CUTOFF=cut(7000), F_MODE=.1)
 chip('8bit Arp', A_PW=.5, AMP_D=ed(.08), AMP_S=0, DLY_MIX=.2, DLY_TIME=dly(.12), DLY_FB=.4)
 
 # --------------------------------------------------------------------------------------------
 names = [p[1] for p in PATCHES]
 assert len(names) == len(set(names)), [n for n in names if names.count(n) > 1]
 assert len(PATCHES) == 200, len(PATCHES)
+for _c, _n, _r, _d in PATCHES:
+    for _k, _v in _d.items():
+        assert 0.0 <= _v <= 1.0, 'parameter out of range: %s %s=%s' % (_n, _k, _v)
 
 # ---------------------------------------------------------------------------------------------
 levels = json.load(open(LEVELS)) if os.path.exists(LEVELS) else {}
@@ -396,6 +401,7 @@ def f(v):
     return s + 'f'
 
 with open(OUT, 'w') as o:
+    o.write('// SPDX-License-Identifier: MIT\n')
     o.write('// GENERATED by tools/gen_factory_presets.py -- edit the script, not this file.\n')
     o.write('// %d factory patches. Values are normalised 0..1 engine parameters; unlisted parameters keep their defaults.\n' % len(PATCHES))
     o.write('#pragma once\n\n#include "Presets.h"\n\nnamespace kraken\n{\n')

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // kr@ken synth engine (v2). Header-only: the exact same code renders live audio
 // and the offline candidates the analyzer evaluates.
 //

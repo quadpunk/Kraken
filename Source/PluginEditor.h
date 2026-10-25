@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 
 #include "Common.h"
@@ -31,7 +32,12 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
+    juce::Rectangle<int> getWaveBounds() const { return waveRect.getUnion (patchRect).toNearestInt(); }
+
 private:
+    enum class SelDrag { none, start, end, window };
+    float timeToX (float t) const;
+    float xToTime (float x) const;
     void timerCallback() override;
     juce::Point<float> tipPos (const kraken::Patch&, int arm) const;
 
@@ -57,12 +63,14 @@ private:
     std::array<juce::Point<float>, kraken::kNumArms> anchors;
     std::array<juce::Rectangle<float>, 6> kinRects;
     std::array<juce::Rectangle<float>, 14> cells;
-    juce::Rectangle<float> arena, waveRect, inspector;
+    juce::Rectangle<float> arena, waveRect, regionRect, patchRect, inspector;
     juce::Point<float> headC, mousePos;
     float headRx = 95.0f, headRy = 80.0f;
     float time = 0.0f;
     int hoverArm = -1, dragArm = -1, hoverKin = -1;
     int selArm = 0, hoverParam = -1, dragParam = -1;
+    SelDrag selDrag = SelDrag::none;
+    float selGrab = 0.0f;
 
     // sample -> patch animation (ship is pulled down, debris is spat back up)
     struct Debris { int kind = 0; juce::Point<float> off; float delay = 0, flight = 1.2f, apex = 60, rot = 0, spin = 0, phase = 0; };
@@ -99,6 +107,7 @@ private:
     KrakenView view;
     juce::TextButton loadBtn { "LOAD SAMPLE" }, playSampleBtn { "PLAY SAMPLE" },
                      playPatchBtn { "PLAY PATCH" }, mutateBtn { "MUTATE" }, stopBtn { "STOP" };
+    juce::TextButton analyseBtn { "ANALYSE" };
     juce::TextButton prevBtn { "<" }, presetBtn { "PRESETS" }, nextBtn { ">" }, saveBtn { "SAVE" }, exportBtn { "EXPORT" };
     std::unique_ptr<juce::FileChooser> chooser;
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Independent quality metrics (different from the analyzer's loss): target vs. rendered patch.
 // usage: eval target.raw patch.txt [old]
 #include "../Source/SynthEngine.h"

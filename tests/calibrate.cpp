@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Renders every factory patch at its root note, checks sanity, equalises loudness and prints a diversity report.
 // Writes tools/factory_levels.json. Build: g++ -O2 -std=c++17 calibrate.cpp -o calibrate
 #include "../Source/SynthEngine.h"
