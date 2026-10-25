@@ -1,4 +1,4 @@
-#kr@ken
+Kr@ken
 
 Kraken v0.3.0 — Windows VST3
 
