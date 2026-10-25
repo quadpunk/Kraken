@@ -17,14 +17,14 @@ Features
 
 Installation
 
-1. Download "Kraken-Windows-xxx.zip" from the Assets section below.
+1. Download "Release.zip" from the Release section.
 2. Extract the ZIP file.
 3. Install "Kraken.vst3" in your VST3 plugins directory, typically "C:\Program Files\Common Files\VST3".
 4. Restart your DAW and rescan your plugins if necessary.
 
 Standalone
 1. Download "Kraken-Windows-xxx.zip" from the Assets section below.
-2. Run kr@ken.exe
+2. Run "kr@ken.exe"
 
 
 Status
