@@ -1,5 +1,7 @@
 # Kr@ken
 
+kr@ken is a VST beast lurking under the synthwaves, ready to devour every sample it finds and spits out a patch.
+
 Kraken v2 — Windows VST3
 
 Kraken is an experimental synthesizer that attempts to recreate synthesizer patches from audio samples.
