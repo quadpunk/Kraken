@@ -9,6 +9,7 @@ Kraken is an experimental synthesizer that attempts to recreate synthesizer patc
 Features
 
 - Automatic sample analysis and synth patch generation
+- 200 Built in Synth patches
 - Multi-resolution spectral analysis
 - Improved transient and envelope matching
 - Evolutionary parameter optimization
@@ -20,6 +21,7 @@ Installation
 2. Extract the ZIP file.
 3. Install "Kraken.vst3" in your VST3 plugins directory, typically "C:\Program Files\Common Files\VST3".
 4. Restart your DAW and rescan your plugins if necessary.
+
 
 Status
 
