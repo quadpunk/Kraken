@@ -1,4 +1,4 @@
-# kr@ken
+# kr@ken plugin
 
 - A very hungry kr@ken lurking under the deep synthwaves, ready to devour every sample coming its way and spitting out a patch when it's done devouring.
 
