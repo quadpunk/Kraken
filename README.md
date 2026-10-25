@@ -1,7 +1,12 @@
 # kr@ken
 
+- A very hungry kr@ken lurking under the deep synthwaves, ready to devour every sample coming its way and spitting out a patch when it's done devouring.
+
 A VST3 / standalone synth that **listens to a sample, hunts down a synth patch that sounds like it,
 and lets you reshape that patch by dragging the tentacles of a black & white kraken.**
+
+<img width="1362" height="931" alt="image" src="https://github.com/user-attachments/assets/d57269cb-a8b3-4e22-ad0a-93d98d828bdf" />
+
 
 ## Build
 
