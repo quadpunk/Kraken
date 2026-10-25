@@ -8,21 +8,6 @@ and lets you reshape that patch by dragging the tentacles of a black & white kra
 <img width="1362" height="931" alt="image" src="https://github.com/user-attachments/assets/d57269cb-a8b3-4e22-ad0a-93d98d828bdf" />
 
 
-## Build
-
-### On GitHub (easiest)
-1. Push this folder to a GitHub repo.
-2. The workflow in `.github/workflows/build.yml` builds Windows, macOS (universal) and Linux.
-3. Download the artifact from the Actions tab (`kr-at-ken-<OS>`), the plugin is in `VST3/kr@ken.vst3`.
-
-### Locally
-```
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --parallel
-```
-Output: `build/Kraken_artefacts/...`  (VST3 + Standalone).
-Needs CMake >= 3.22, a C++17 compiler and git (JUCE is fetched automatically).
-
 ## Use
 1. Drop a sample onto the window (or **LOAD SAMPLE**). The analyzer runs in the background.
 2. When done, the best patch is loaded. **PLAY SAMPLE / PLAY PATCH** let you A/B at the detected root note.
@@ -87,8 +72,23 @@ re-run it; `tests/calibrate.cpp` equalises their loudness.
   evolving textures) will only be approximated. Analysis uses at most the first 1.1 s of the sample.
 * Analysis time depends on your CPU cores (it uses up to 8).
 
+* ## Build
+
+### On GitHub (easiest)
+1. Push this folder to a GitHub repo.
+2. The workflow in `.github/workflows/build.yml` builds Windows, macOS (universal) and Linux.
+3. Download the artifact from the Actions tab (`kr-at-ken-<OS>`), the plugin is in `VST3/kr@ken.vst3`.
+
+### Locally
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel
+```
+Output: `build/Kraken_artefacts/...`  (VST3 + Standalone).
+Needs CMake >= 3.22, a C++17 compiler and git (JUCE is fetched automatically).
+
 ## Licence note
-JUCE is AGPLv3 / commercial. If you plan to sell closed-source, you need a JUCE licence.
+JUCE is AGPLv3
 
 ## SysEx export
 EXPORT -> *Export this patch as MIDI SysEx* / *Export all my patches as SysEx* writes `.syx` files in kr@ken's own format
