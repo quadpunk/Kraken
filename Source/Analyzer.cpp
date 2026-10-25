@@ -1,4 +1,5 @@
 #include "Analyzer.h"
+#include "Presets.h"
 
 #include <random>
 #include <thread>
@@ -40,13 +41,13 @@ std::vector<float> resample (const std::vector<float>& in, double srcSr, double 
 }
 
 //==============================================================================
-float detectPitch (const std::vector<float>& x, double sr)
+std::vector<float> detectPitchCandidates (const std::vector<float>& x, double sr)
 {
     const int W = 1536;
     const int minTau = std::max (1, (int) (sr / 2000.0));
     const int maxTau = (int) (sr / 50.0);
     const int n = (int) x.size();
-    if (n < W + maxTau + 2) return 0.0f;
+    if (n < W + maxTau + 2) return {};
 
     std::vector<float> est;
     std::vector<float> d ((size_t) maxTau + 1), cm ((size_t) maxTau + 1);
@@ -88,9 +89,7 @@ float detectPitch (const std::vector<float>& x, double sr)
         }
         if (best > 0) est.push_back ((float) (sr / best));
     }
-    if (est.size() < 2) return 0.0f;
-    std::sort (est.begin(), est.end());
-    return est[est.size() / 2];
+    return est;
 }
 
 //==============================================================================
@@ -108,21 +107,48 @@ struct FftSet
     std::vector<float> buf = std::vector<float> (4096, 0.0f);
 };
 
+constexpr int kBands = 48;
+
+struct BandMap { std::vector<int> lo, hi; };
+
+BandMap makeBands (int fftSize)
+{
+    BandMap m;
+    const double binHz = kSR / fftSize;
+    const int half = fftSize / 2;
+    for (int j = 0; j < kBands; ++j)
+    {
+        const double e0 = 50.0 * std::pow (200.0, (double) j / kBands);
+        const double e1 = 50.0 * std::pow (200.0, (j + 1.0) / kBands);
+        int lo = std::max (1, (int) std::floor (e0 / binHz));
+        int hi = std::max (lo + 1, (int) std::ceil (e1 / binHz));
+        hi = std::min (hi, half);
+        lo = std::min (lo, hi - 1);
+        m.lo.push_back (lo);
+        m.hi.push_back (hi);
+    }
+    return m;
+}
+
+// log-energy in 48 geometric bands (50 Hz .. 10 kHz) per frame
 void logSpectrogram (const std::vector<float>& x, int fftSize, std::vector<float>& out)
 {
     thread_local FftSet fft;
     static const std::vector<float> w512 = makeHann (512);
     static const std::vector<float> w2048 = makeHann (2048);
+    static const BandMap b512 = makeBands (512);
+    static const BandMap b2048 = makeBands (2048);
 
     const bool is512 = (fftSize == 512);
     const auto& win = is512 ? w512 : w2048;
+    const auto& bm = is512 ? b512 : b2048;
     auto& f = is512 ? fft.f512 : fft.f2048;
 
     const int n = (int) x.size();
     const int hop = fftSize / 2;
-    const int bins = (int) ((float) fftSize * 0.44f);
     const int frames = std::max (1, (n - fftSize) / hop + 1);
-    out.assign ((size_t) frames * (size_t) bins, 0.0f);
+    const float sc = 4.0f / (float) fftSize;
+    out.assign ((size_t) frames * (size_t) kBands, 0.0f);
 
     for (int fr = 0; fr < frames; ++fr)
     {
@@ -134,11 +160,17 @@ void logSpectrogram (const std::vector<float>& x, int fftSize, std::vector<float
             fft.buf[(size_t) i] = idx < n ? x[(size_t) idx] * win[(size_t) i] : 0.0f;
         }
         f.performRealOnlyForwardTransform (fft.buf.data(), true);
-        for (int k = 1; k <= bins; ++k)
+        for (int b = 0; b < kBands; ++b)
         {
-            const float re = fft.buf[(size_t) (2 * k)], im = fft.buf[(size_t) (2 * k + 1)];
-            const float m = std::sqrt (re * re + im * im) * 4.0f / (float) fftSize;
-            out[(size_t) fr * (size_t) bins + (size_t) (k - 1)] = 20.0f * std::log10 (m + 3.0e-5f);
+            float e = 0.0f;
+            const int lo = bm.lo[(size_t) b], hi = bm.hi[(size_t) b];
+            for (int k = lo; k < hi; ++k)
+            {
+                const float re = fft.buf[(size_t) (2 * k)] * sc, im = fft.buf[(size_t) (2 * k + 1)] * sc;
+                e += re * re + im * im;
+            }
+            e /= (float) (hi - lo);
+            out[(size_t) fr * (size_t) kBands + (size_t) b] = 10.0f * std::log10 (e + 1.0e-9f);
         }
     }
 }
@@ -187,7 +219,7 @@ public:
     {
         thread_local std::vector<float> cand, s5, s20, env;
         Patch p = pIn;
-        p.level = 0.70710678f; // gain 1.0
+        p.level = 0.5f; // gain 1.0 (gain = level^2 * 4)
         renderOffline (p, kSR, freq, N, hold, cand);
 
         double e = 0;
@@ -226,6 +258,7 @@ void parallelFor (int n, const std::function<void (int)>& fn)
     std::atomic<int> next { 0 };
     auto worker = [&]
     {
+        juce::ScopedNoDenormals noDenormals;
         for (;;)
         {
             const int i = next.fetch_add (1);
@@ -245,7 +278,7 @@ float distance (const Patch& a, const Patch& b)
 {
     float s = 0;
     for (int i = 0; i < kNumParams; ++i) { const float d = a.p[(size_t) i] - b.p[(size_t) i]; s += d * d; }
-    return std::sqrt (s);
+    return std::sqrt (s / (float) kNumParams);
 }
 
 } // namespace
@@ -285,13 +318,39 @@ void Analyzer::run()
     const int fade = std::min (220, (int) tgt.size());
     for (int i = 0; i < fade; ++i) tgt[tgt.size() - 1 - (size_t) i] *= (float) i / (float) fade;
 
-    float freq = detectPitch (tgt, kSR);
-    if (freq <= 0.0f) freq = 220.0f;
-    freq = std::min (std::max (freq, 30.0f), 4000.0f);
+    // pitch: collect candidates (+ octave variants) and let the archetypes vote
+    std::vector<float> cands;
+    {
+        auto addCand = [&] (float f)
+        {
+            if (f < 30.0f || f > 4000.0f) return;
+            for (float c : cands) if (std::abs (std::log2 (f / c)) < 0.04f) return;
+            cands.push_back (f);
+        };
+        const auto est = detectPitchCandidates (tgt, kSR);
+        for (float e : est) { addCand (e); addCand (e * 2.0f); addCand (e * 0.5f); addCand (e * 1.5f); addCand (e / 1.5f); }
+        if (cands.empty()) { addCand (110.0f); addCand (220.0f); addCand (440.0f); }
+        if (cands.size() > 14) cands.resize (14);
+    }
 
-    Evaluator ev (tgt, freq);
+    const auto seeds0 = archetypes();
+    float freq = cands[0];
+    std::unique_ptr<Evaluator> evPtr;
+    {
+        float bestVote = 1.0e9f;
+        for (float f : cands)
+        {
+            if (threadShouldExit()) return;
+            auto e = std::make_unique<Evaluator> (tgt, f);
+            std::vector<float> l (seeds0.size());
+            parallelFor ((int) seeds0.size(), [&] (int i) { l[(size_t) i] = e->loss (seeds0[(size_t) i]); });
+            const float m = *std::min_element (l.begin(), l.end());
+            if (m < bestVote) { bestVote = m; freq = f; evPtr = std::move (e); }
+        }
+    }
+    Evaluator& ev = *evPtr;
 
-    // ---- 2. evolutionary search ------------------------------------------------
+    // ---- 2. search: archetype seeds -> evolution strategy -> coordinate polish ---------
     std::mt19937 rng (0xBEEF);
     std::normal_distribution<float> nd (0.0f, 1.0f);
     std::uniform_real_distribution<float> ud (0.0f, 1.0f);
@@ -301,18 +360,45 @@ void Analyzer::run()
         parallelFor ((int) c.size(), [&] (int i) { c[(size_t) i].loss = ev.loss (c[(size_t) i].p); });
     };
     auto byLoss = [] (const Cand& a, const Cand& b) { return a.loss < b.loss; };
-
-    constexpr int mu = 8, lambda = 32, generations = 90, initN = 400;
-
-    std::vector<Cand> pop ((size_t) initN);
-    for (size_t i = 0; i < pop.size(); ++i)
+    auto mutated = [&] (const Patch& base, float sigma, float prob)
     {
-        pop[i].p = defaultPatch();
-        if (i > 0) for (auto& v : pop[i].p.p) v = ud (rng);
-    }
+        Patch m = base;
+        bool any = false;
+        for (auto& v : m.p)
+            if (ud (rng) < prob) { v = std::min (1.0f, std::max (0.0f, v + sigma * nd (rng))); any = true; }
+        if (! any)
+        {
+            auto& v = m.p[(size_t) (rng() % (unsigned) kNumParams)];
+            v = std::min (1.0f, std::max (0.0f, v + sigma * nd (rng)));
+        }
+        return m;
+    };
+
+    constexpr int mu = 12, lambda = 48, generations = 110;
+    constexpr int polishRounds = 3;
+    const float totalSteps = (float) (generations + polishRounds + 2);
+    float stepsDone = 0.0f;
+    auto report = [&] { stepsDone += 1.0f; if (onProgress) onProgress (std::min (0.99f, stepsDone / totalSteps)); };
+
+    // 2a. evaluate every archetype, then spawn mutants around the best few
+    std::vector<Cand> pop;
+    for (const auto& a : archetypes()) { Cand c; c.p = a; pop.push_back (c); }
+    const size_t nSeeds = pop.size();
+    for (size_t i = 0; i < nSeeds; ++i)               // a few wild variants of every seed
+        for (int k = 0; k < 2; ++k) { Cand c; c.p = mutated (pop[i].p, 0.30f, 0.4f); pop.push_back (c); }
     evalMany (pop);
     if (threadShouldExit()) return;
     std::sort (pop.begin(), pop.end(), byLoss);
+    report();
+
+    std::vector<Cand> spawn;
+    for (int s = 0; s < 8; ++s)
+        for (int k = 0; k < 20; ++k) { Cand c; c.p = mutated (pop[(size_t) s].p, 0.12f, 0.25f); spawn.push_back (c); }
+    evalMany (spawn);
+    if (threadShouldExit()) return;
+    pop.insert (pop.end(), spawn.begin(), spawn.end());
+    std::sort (pop.begin(), pop.end(), byLoss);
+    report();
 
     std::vector<float> w ((size_t) mu);
     float wsum = 0;
@@ -327,19 +413,30 @@ void Analyzer::run()
         mean[(size_t) d] = m;
         float var = 0;
         for (int i = 0; i < 24; ++i) { const float df = pop[(size_t) i].p.p[(size_t) d] - m; var += df * df / 24.0f; }
-        sigma[(size_t) d] = std::max (0.10f, std::sqrt (var));
+        sigma[(size_t) d] = std::max (0.07f, std::sqrt (var));
     }
 
     Cand best = pop[0];
-    std::vector<Cand> archive (pop.begin(), pop.begin() + 12);
+    std::vector<Cand> archive (pop.begin(), pop.begin() + 16);
 
+    // 2b. evolution strategy (half of the offspring mutate only a sparse subset of dimensions)
     for (int g = 0; g < generations; ++g)
     {
         if (threadShouldExit()) return;
         std::vector<Cand> off ((size_t) lambda);
-        for (auto& c : off)
+        for (int k = 0; k < lambda; ++k)
+        {
+            const bool sparse = (k & 1) != 0;
+            auto& c = off[(size_t) k];
+            bool any = false;
             for (int d = 0; d < kNumParams; ++d)
-                c.p.p[(size_t) d] = std::min (1.0f, std::max (0.0f, mean[(size_t) d] + sigma[(size_t) d] * nd (rng)));
+            {
+                const bool mut = ! sparse || ud (rng) < 0.2f;
+                any = any || mut;
+                c.p.p[(size_t) d] = std::min (1.0f, std::max (0.0f, mean[(size_t) d] + (mut ? sigma[(size_t) d] * nd (rng) : 0.0f)));
+            }
+            (void) any;
+        }
         evalMany (off);
         std::sort (off.begin(), off.end(), byLoss);
         if (off[0].loss < best.loss) best = off[0];
@@ -352,17 +449,59 @@ void Analyzer::run()
             float var = 0;
             for (int i = 0; i < mu; ++i) { const float df = off[(size_t) i].p.p[(size_t) d] - m; var += w[(size_t) i] * df * df; }
             mean[(size_t) d] = m;
-            sigma[(size_t) d] = std::max (0.012f, 0.6f * sigma[(size_t) d] + 0.4f * 1.3f * std::sqrt (var));
+            sigma[(size_t) d] = std::max (0.01f, 0.7f * sigma[(size_t) d] + 0.3f * 1.3f * std::sqrt (var));
         }
-        if (onProgress) onProgress ((float) (g + 1) / (float) generations);
+        report();
     }
+
+    // 2c. coordinate polish: probe +/- step on every parameter in parallel, combine the improvements
+    Patch cur = best.p;
+    float curLoss = best.loss;
+    for (int round = 0; round < polishRounds; ++round)
+    {
+        if (threadShouldExit()) return;
+        const float step = 0.06f / (float) (round + 1);
+        std::vector<Cand> probes;
+        for (int d = 0; d < kNumParams; ++d)
+            for (int sgn = -1; sgn <= 1; sgn += 2)
+            {
+                Cand c; c.p = cur;
+                c.p.p[(size_t) d] = std::min (1.0f, std::max (0.0f, cur.p[(size_t) d] + (float) sgn * step));
+                probes.push_back (c);
+            }
+        evalMany (probes);
+        Patch comb = cur;
+        bool any = false;
+        Cand bestSingle; bestSingle.loss = curLoss;
+        for (int d = 0; d < kNumParams; ++d)
+        {
+            const Cand& a = probes[(size_t) (2 * d)];
+            const Cand& b = probes[(size_t) (2 * d + 1)];
+            const Cand& wn = a.loss < b.loss ? a : b;
+            if (wn.loss < curLoss)
+            {
+                comb.p[(size_t) d] = wn.p.p[(size_t) d];
+                any = true;
+                if (wn.loss < bestSingle.loss) bestSingle = wn;
+            }
+        }
+        if (any)
+        {
+            const float cl = ev.loss (comb);
+            if (cl < curLoss) { cur = comb; curLoss = cl; }
+            else if (bestSingle.loss < curLoss) { cur = bestSingle.p; curLoss = bestSingle.loss; }
+        }
+        report();
+    }
+    best.p = cur;
+    best.loss = curLoss;
 
     // ---- 3. build result -----------------------------------------------------
     auto setLevel = [&] (Patch& p)
     {
         float g = 1.0f;
         ev.loss (p, &g);
-        p.level = std::sqrt (std::min (std::max (g / 2.0f, 0.02f), 1.0f));
+        p.level = std::sqrt (std::min (std::max (g / 4.0f, 0.02f), 1.0f));
     };
 
     Patch bestPatch = best.p;
@@ -376,13 +515,12 @@ void Analyzer::run()
     {
         if (chosen.size() >= 4) break;
         bool far = true;
-        for (const auto& o : chosen) if (distance (c.p, o) < 0.45f) { far = false; break; }
+        for (const auto& o : chosen) if (distance (c.p, o) < 0.10f) { far = false; break; }
         if (far) { chosen.push_back (c.p); Patch q = c.p; setLevel (q); result.kin.push_back (q); }
     }
     while (result.kin.size() < 6)
     {
-        Patch m = best.p;
-        for (auto& v : m.p) v = std::min (1.0f, std::max (0.0f, v + 0.15f * nd (rng)));
+        Patch m = mutated (best.p, 0.15f, 0.3f);
         setLevel (m);
         result.kin.push_back (m);
     }

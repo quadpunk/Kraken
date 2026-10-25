@@ -9,7 +9,8 @@ static juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     const auto def = defaultPatch();
     for (int i = 0; i < kNumParams; ++i)
         layout.add (std::make_unique<juce::AudioParameterFloat> (
-            juce::ParameterID { "p" + juce::String (i), 1 }, paramName (i),
+            juce::ParameterID { "p" + juce::String (i), 1 },
+            juce::String (armName (armOf (i))) + " " + paramShort (i),
             juce::NormalisableRange<float> (0.0f, 1.0f), def.p[(size_t) i]));
     layout.add (std::make_unique<juce::AudioParameterFloat> (
         juce::ParameterID { "level", 1 }, "Level",
@@ -101,17 +102,18 @@ void KrakenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     auto* L = buffer.getWritePointer (0);
+    auto* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
     int pos = 0;
     for (const auto meta : midi)
     {
         const int t = juce::jlimit (pos, n, meta.samplePosition);
-        if (t > pos) { synth.render (L + pos, t - pos); pos = t; }
+        if (t > pos) { synth.render (L + pos, R != nullptr ? R + pos : nullptr, t - pos); pos = t; }
         const auto m = meta.getMessage();
         if (m.isNoteOn()) synth.noteOn (m.getNoteNumber(), m.getFloatVelocity());
         else if (m.isNoteOff()) synth.noteOff (m.getNoteNumber());
         else if (m.isAllNotesOff() || m.isAllSoundOff()) synth.allOff();
     }
-    if (pos < n) synth.render (L + pos, n - pos);
+    if (pos < n) synth.render (L + pos, R != nullptr ? R + pos : nullptr, n - pos);
 
     if (samplePlaying)
     {
@@ -125,16 +127,15 @@ void KrakenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
                 const int i0 = (int) samplePos;
                 if (i0 + 1 >= size) { samplePlaying = false; break; }
                 const float f = (float) (samplePos - i0);
-                L[i] += 0.8f * (sampleData[(size_t) i0] * (1.0f - f) + sampleData[(size_t) i0 + 1] * f);
+                const float smp = 0.8f * (sampleData[(size_t) i0] * (1.0f - f) + sampleData[(size_t) i0 + 1] * f);
+                L[i] += smp;
+                if (R != nullptr) R[i] += smp;
                 samplePos += ratio;
             }
         }
         else if (! lock.isLocked()) {}
         else samplePlaying = false;
     }
-
-    if (buffer.getNumChannels() > 1)
-        buffer.copyFrom (1, 0, buffer, 0, 0, n);
 }
 
 //==============================================================================
