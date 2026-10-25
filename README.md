@@ -52,6 +52,7 @@ Standalone
 Status
 
 Experimental build. Audio matching quality may vary depending on the input sample.
+Coded using Claude.
 
 Platform
 
