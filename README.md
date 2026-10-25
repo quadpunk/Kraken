@@ -44,7 +44,7 @@ Kraken is a synthesizer plugin that analyzes an audio sample and attempts to rec
 
 Standalone
 1. Download "Kraken-Windows-xxx.zip" from the Assets section below.
-2. Run "kr@ken.exe"
+2. Run "kr@ken exe"
 
 
 Status
