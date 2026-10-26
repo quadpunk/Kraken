@@ -143,6 +143,13 @@ void KrakenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
         else if (! lock.isLocked()) {}
         else samplePlaying = false;
     }
+    {
+        float pk = 0.0f;
+        for (int ch = 0; ch < std::min (2, buffer.getNumChannels()); ++ch) pk = std::max (pk, buffer.getMagnitude (ch, 0, n));
+        const float fall = std::exp (-(float) n / (0.15f * (float) std::max (currentSr, 1.0)));
+        outPeak.store (std::max (pk, outPeak.load() * fall));
+        activeVoiceCount.store (synth.activeCount());
+    }
     playhead.store (samplePlaying ? (float) (samplePos / sampleSr) : -1.0f);
 }
 

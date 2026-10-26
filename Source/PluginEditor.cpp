@@ -331,7 +331,7 @@ void KrakenView::resized()
 
     headRx = 95.0f * s;
     headRy = 80.0f * s;
-    headC = { W * 0.5f, arena.getY() + 12.0f + headRy + 8.0f * s };
+    headC = { W * 0.5f, arena.getY() - 4.0f + headRy + 8.0f * s };   // 16 px higher than before: more room above the meters
 
     const float margin = 24.0f;
     const float cell = (W - 2.0f * margin) / (float) kNumArms;
@@ -414,6 +414,7 @@ void KrakenView::paint (juce::Graphics& g)
         g.drawEllipse (x + std::sin (time + (float) i) * 6.0f - rad, y - rad, rad * 2.0f, rad * 2.0f, 1.0f);
     }
 
+    drawArenaDecor (g);
     drawHeader (g);
 
     // tide pools (drag zones)
@@ -438,6 +439,9 @@ void KrakenView::paint (juce::Graphics& g)
                     juce::Justification::centredRight, false);
         g.drawText ("^ " + juce::String (paramShort (kArmFirst[i] + 1)), z.withHeight (14.0f).translated (0.0f, 2.0f),
                     juce::Justification::centredLeft, false);
+        g.setColour (white.withAlpha (active ? 0.75f : 0.25f));
+        g.drawText (juce::String (i + 1).paddedLeft ('0', 2), z.withHeight (14.0f).translated (-4.0f, 2.0f),
+                    juce::Justification::centredRight, false);
     }
 
     // tentacles gripping the ship
@@ -514,7 +518,7 @@ void KrakenView::drawHeader (juce::Graphics& g)
 
     g.setColour (white);
     g.setFont (monoFont (12.0f, true));
-    g.drawText (status, 24, 78, juce::jmax (220, getWidth() - 500), 16, juce::Justification::centredLeft, true);
+    g.drawText (status, 24, 78, juce::jmax (200, (int) (getWidth() * 0.5f - 100.0f * scaleU - 34.0f)), 16, juce::Justification::centredLeft, true);
 
     if (proc.analysing.load())
     {
@@ -525,10 +529,106 @@ void KrakenView::drawHeader (juce::Graphics& g)
         g.fillRect (bar.withWidth (bar.getWidth() * proc.progress.load()));
     }
 
+    // thin ruler under the header
+    const float W = (float) getWidth(), ry = (float) kHeaderH - 3.0f;
+    g.setColour (white.withAlpha (0.22f));
+    g.drawLine (0.0f, ry, W, ry, 1.0f);
+    for (int x = 0; x < (int) W; x += 20)
+    {
+        const bool major = x % 100 == 0;
+        g.setColour (white.withAlpha (major ? 0.4f : 0.2f));
+        g.drawLine ((float) x + 0.5f, ry - (major ? 6.0f : 3.0f), (float) x + 0.5f, ry, 1.0f);
+    }
+    g.setFont (monoFont (9.0f));
+    g.setColour (white.withAlpha (0.3f));
+    g.drawText ("200 patches  |  77 parameters  |  8 voices", (int) W - 24 - 320, 3, 320, 11, juce::Justification::centredRight, false);
+
+    // row under the preset browser: patch info, output meter, voices
+    const float rowX = W - 368.0f, y3 = 90.0f;
+    juce::String info = "NO PATCH LOADED";
+    if (proc.presetName.isNotEmpty())
+    {
+        info = "USER / RECENT";
+        const auto& fac = proc.presets.factory();
+        for (size_t i = 0; i < fac.size(); ++i)
+            if (fac[i].name == proc.presetName)
+            {
+                info = fac[i].category.toUpperCase() + "  " + juce::String ((int) i + 1) + "/" + juce::String ((int) fac.size());
+                break;
+            }
+    }
+    g.setFont (monoFont (9.0f, true));
+    g.setColour (white.withAlpha (0.75f));
+    g.drawText (info, (int) rowX, (int) y3 - 1, 138, 12, juce::Justification::centredLeft, true);
+
+    g.setFont (monoFont (9.0f));
     g.setColour (white.withAlpha (0.55f));
-    g.setFont (monoFont (10.0f));
-    g.drawText ("scroll = level " + juce::String (juce::roundToInt (proc.getLevel() * 100.0f)) + "%   dbl-click = reset",
-                24, getHeight() - 198, 360, 12, juce::Justification::centredLeft, false);
+    g.drawText ("OUT", (int) rowX + 142, (int) y3 - 1, 24, 12, juce::Justification::centredLeft, false);
+    const float db = 20.0f * std::log10 (std::max (proc.outPeak.load(), 1.0e-5f));
+    const int lit = juce::roundToInt (juce::jlimit (0.0f, 1.0f, (db + 48.0f) / 48.0f) * 20.0f);
+    for (int k = 0; k < 20; ++k)
+    {
+        g.setColour (white.withAlpha (k < lit ? (k >= 17 ? 1.0f : 0.8f) : 0.16f));
+        g.fillRect (rowX + 168.0f + (float) k * 5.0f, y3, 4.0f, 9.0f);
+    }
+    const int voices = proc.activeVoiceCount.load();
+    for (int k = 0; k < 8; ++k)
+    {
+        const juce::Rectangle<float> r (rowX + 344.0f - 70.0f + (float) k * 9.0f, y3 + 1.0f, 7.0f, 7.0f);
+        if (k < voices) { g.setColour (white); g.fillRect (r); }
+        else            { g.setColour (white.withAlpha (0.3f)); g.drawRect (r, 1.0f); }
+    }
+}
+
+void KrakenView::drawArenaDecor (juce::Graphics& g)
+{
+    const auto white = juce::Colours::white;
+    const float W = (float) getWidth();
+    juce::Graphics::ScopedSaveState state (g);
+    g.reduceClipRegion (arena.toNearestInt());
+
+    // sonar rings and spokes around the kraken
+    for (int k = 0; k < 5; ++k)
+    {
+        const float r = (170.0f + 85.0f * (float) k) * scaleU;
+        g.setColour (white.withAlpha (0.085f - 0.014f * (float) k));
+        g.drawEllipse (headC.x - r, headC.y - r * 0.72f, r * 2.0f, r * 1.44f, 1.0f);
+    }
+    g.setColour (white.withAlpha (0.045f));
+    for (int a = 0; a < 12; ++a)
+    {
+        const float ang = juce::MathConstants<float>::twoPi * (float) a / 12.0f + 0.26f;
+        g.drawLine (headC.x, headC.y, headC.x + std::cos (ang) * 900.0f * scaleU, headC.y + std::sin (ang) * 650.0f * scaleU, 1.0f);
+    }
+
+    // depth ruler on the left edge
+    const float top = arena.getY() + 28.0f, bottom = inspector.getY() - 30.0f;
+    int n = 0;
+    for (float y = top; y < bottom; y += 20.0f, ++n)
+    {
+        const bool major = n % 4 == 0;
+        g.setColour (white.withAlpha (major ? 0.4f : 0.2f));
+        g.drawLine (6.0f, y, major ? 14.0f : 10.0f, y, 1.0f);
+        if (major)
+        {
+            g.setFont (monoFont (8.0f));
+            g.setColour (white.withAlpha (0.3f));
+            g.drawText (juce::String (n * 5), 15, (int) y - 5, 18, 10, juce::Justification::centredLeft, false);
+        }
+    }
+
+    // corner brackets
+    g.setColour (white.withAlpha (0.4f));
+    const float m = 8.0f, L = 14.0f;
+    const float x0 = m, x1 = W - m, y0 = arena.getY() + m, y1 = arena.getBottom() - m;
+    for (int cx = 0; cx < 2; ++cx)
+        for (int cy = 0; cy < 2; ++cy)
+        {
+            const float px = cx ? x1 : x0, py = cy ? y1 : y0;
+            const float dx = cx ? -L : L, dy = cy ? -L : L;
+            g.drawLine (px, py, px + dx, py, 1.2f);
+            g.drawLine (px, py, px, py + dy, 1.2f);
+        }
 }
 
 void KrakenView::drawHead (juce::Graphics& g)
@@ -722,12 +822,25 @@ void KrakenView::drawTentacle (juce::Graphics& g, juce::Point<float> p0, juce::P
 void KrakenView::drawInspector (juce::Graphics& g, const Patch& patch)
 {
     const auto white = juce::Colours::white;
+    g.setColour (white.withAlpha (0.045f));
+    g.fillRoundedRectangle (inspector.expanded (4.0f, 2.0f), 6.0f);
     g.setColour (white.withAlpha (0.35f));
     g.drawRoundedRectangle (inspector.expanded (4.0f, 2.0f), 6.0f, 1.0f);
-    g.setColour (white);
-    g.setFont (monoFont (11.0f, true));
-    g.drawText (juce::String ("> ") + armName (selArm) + "   (click a tentacle to inspect)",
-                inspector.withHeight (16.0f).translated (2.0f, 0.0f), juce::Justification::centredLeft, false);
+    {
+        const juce::Rectangle<float> tab (inspector.getX() + 2.0f, inspector.getY() + 1.0f, 116.0f, 15.0f);
+        g.setColour (white);
+        g.fillRoundedRectangle (tab, 3.0f);
+        g.setColour (juce::Colours::black);
+        g.setFont (monoFont (11.0f, true));
+        g.drawText (armName (selArm), tab, juce::Justification::centred, false);
+        g.setColour (white.withAlpha (0.55f));
+        g.setFont (monoFont (10.0f));
+        g.drawText ("ARM " + juce::String (selArm + 1) + "/" + juce::String (kNumArms) + "   click a tentacle to inspect",
+                    (int) tab.getRight() + 10, (int) tab.getY(), 330, 15, juce::Justification::centredLeft, false);
+        g.setColour (white.withAlpha (0.4f));
+        g.drawText ("drag = set    dbl-click = reset    scroll = level " + juce::String (juce::roundToInt (proc.getLevel() * 100.0f)) + "%",
+                    (int) inspector.getRight() - 420, (int) tab.getY(), 418, 15, juce::Justification::centredRight, false);
+    }
 
     const int first = kArmFirst[selArm];
     for (int j = 0; j < kArmCount[selArm]; ++j)
@@ -743,6 +856,12 @@ void KrakenView::drawInspector (juce::Graphics& g, const Patch& patch)
         const float y = cell.getBottom() - 6.0f;
         g.setColour (white.withAlpha (0.3f));
         g.drawLine (cell.getX(), y, cell.getRight(), y, 1.0f);
+        for (int t = 0; t <= 4; ++t)
+        {
+            const float tx = cell.getX() + (float) t * 0.25f * cell.getWidth();
+            g.setColour (white.withAlpha (t == 2 ? 0.55f : 0.3f));
+            g.drawLine (tx, y + 2.0f, tx, y + (t == 2 ? 6.0f : 4.0f), 1.0f);
+        }
         g.setColour (white);
         g.drawLine (cell.getX(), y, cell.getX() + v * cell.getWidth(), y, active ? 3.0f : 2.0f);
         const float r = active ? 5.0f : 4.0f;
@@ -753,6 +872,13 @@ void KrakenView::drawInspector (juce::Graphics& g, const Patch& patch)
 void KrakenView::drawBottom (juce::Graphics& g, const Patch& patch)
 {
     const auto white = juce::Colours::white;
+
+    g.setFont (monoFont (9.0f, true));
+    g.setColour (white.withAlpha (0.55f));
+    g.drawText ("SAMPLE EDITOR   |   COMPARE SAMPLE vs PATCH", (int) waveRect.getX(), (int) waveRect.getY() - 14, (int) waveRect.getWidth(), 11,
+                juce::Justification::centredLeft, false);
+    g.setColour (white.withAlpha (0.2f));
+    g.drawLine (waveRect.getX() + 290.0f, waveRect.getY() - 9.0f, waveRect.getRight(), waveRect.getY() - 9.0f, 1.0f);
 
     // sample editor: overview strip (handles) + zoomed sample region + rendered patch, all on the same time axis
     const float sampleLen = proc.getSampleLength();
@@ -839,6 +965,15 @@ void KrakenView::drawBottom (juce::Graphics& g, const Patch& patch)
     }
 
     // kin blobs
+    g.setColour (white.withAlpha (0.045f));
+    g.fillRoundedRectangle (juce::Rectangle<float> (kinRects[0].getX() - 10.0f, kinRects[0].getY() - 22.0f,
+                                                    kinRects[5].getRight() - kinRects[0].getX() + 20.0f, 66.0f), 6.0f);
+    g.setColour (white.withAlpha (0.25f));
+    g.drawRoundedRectangle (juce::Rectangle<float> (kinRects[0].getX() - 10.0f, kinRects[0].getY() - 22.0f,
+                                                    kinRects[5].getRight() - kinRects[0].getX() + 20.0f, 66.0f), 6.0f, 1.0f);
+    g.setFont (monoFont (9.0f));
+    g.setColour (white.withAlpha (0.4f));
+    g.drawText ("click = load", (int) kinRects[5].getRight() - 70, (int) kinRects[0].getY() - 16, 70, 12, juce::Justification::right, false);
     g.setFont (monoFont (10.0f, true));
     g.setColour (white.withAlpha (0.6f));
     g.drawText ("KIN", (int) kinRects[0].getX() - 4, (int) kinRects[0].getY() - 16, 60, 12, juce::Justification::left, false);
@@ -1045,7 +1180,7 @@ KrakenEditor::KrakenEditor (KrakenProcessor& p) : juce::AudioProcessorEditor (&p
     startTimerHz (4);
 
     setResizable (true, true);
-    setResizeLimits (820, 700, 1700, 1280);
+    setResizeLimits (960, 700, 1700, 1280);
     setSize (980, 820);
 }
 
@@ -1075,13 +1210,13 @@ void KrakenEditor::resized()
 
     // second row: preset browser  [<] [name v] [>] [SAVE] [EXPORT]
     int x2 = getWidth() - 24;
-    const int y2 = 62, h2 = 26, g2 = 6;
+    const int y2 = 56, h2 = 26, g2 = 5;
     auto place2 = [&] (juce::TextButton& b, int w) { x2 -= w; b.setBounds (x2, y2, w, h2); x2 -= g2; };
-    place2 (exportBtn, 84);
-    place2 (saveBtn, 64);
-    place2 (nextBtn, 30);
-    place2 (presetBtn, 210);
-    place2 (prevBtn, 30);
+    place2 (exportBtn, 76);
+    place2 (saveBtn, 56);
+    place2 (nextBtn, 26);
+    place2 (presetBtn, 140);
+    place2 (prevBtn, 26);
 }
 
 namespace
@@ -1097,7 +1232,7 @@ struct FnCallback : juce::ModalComponentManager::Callback
 void KrakenEditor::timerCallback()
 {
     juce::String t = proc.presetName.isEmpty() ? juce::String ("PRESETS  v") : proc.presetName;
-    if (t.length() > 22) t = t.substring (0, 21) + "...";
+    if (t.length() > 16) t = t.substring (0, 15) + "...";
     if (presetBtn.getButtonText() != t) presetBtn.setButtonText (t);
 }
 

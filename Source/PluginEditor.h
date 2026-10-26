@@ -36,6 +36,7 @@ public:
 
 private:
     enum class SelDrag { none, start, end, window };
+    void drawArenaDecor (juce::Graphics& g);
     float timeToX (float t) const;
     float xToTime (float x) const;
     void timerCallback() override;

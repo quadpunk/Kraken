@@ -1,23 +1,22 @@
-# kr@ken - sample to synth patch
-
-- A very hungry kr@ken lurking under the deep synthwaves, ready to devour every sample coming its way and spitting out a patch when it's done devouring.
+# kr@ken
 
 A VST3 / standalone synth that **listens to a sample, hunts down a synth patch that sounds like it,
 and lets you reshape that patch by dragging the tentacles of a black & white kraken.**
 
-<img width="1362" height="931" alt="image" src="https://github.com/user-attachments/assets/d57269cb-a8b3-4e22-ad0a-93d98d828bdf" />
+## Build
 
+### On GitHub (easiest)
+1. Push this folder to a GitHub repo.
+2. The workflow in `.github/workflows/build.yml` builds Windows, macOS (universal) and Linux.
+3. Download the artifact from the Actions tab (`kr-at-ken-<OS>`), the plugin is in `VST3/kr@ken.vst3`.
 
-## Installation:
-Download your relevant version from the release page WIN/MAC/Linux
-
-VST3:
-Put your downloaded VST3 file inside C:\Program Files\Common Files\VST3 or folder your DAW points to.
-Or relevant Linux/Mac folder.
-
-Standalone:
-Open kr@ken exe file in standalone folder from release
-
+### Locally
+```
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release --parallel
+```
+Output: `build/Kraken_artefacts/...`  (VST3 + Standalone).
+Needs CMake >= 3.22, a C++17 compiler and git (JUCE is fetched automatically).
 
 ## Use
 1. Drop a sample onto the window (or **LOAD SAMPLE**). The analyzer runs in the background.
@@ -83,23 +82,8 @@ re-run it; `tests/calibrate.cpp` equalises their loudness.
   evolving textures) will only be approximated. Analysis uses at most the first 1.1 s of the sample.
 * Analysis time depends on your CPU cores (it uses up to 8).
 
-* ## Build
-
-### On GitHub (easiest)
-1. Push this folder to a GitHub repo.
-2. The workflow in `.github/workflows/build.yml` builds Windows, macOS (universal) and Linux.
-3. Download the artifact from the Actions tab (`kr-at-ken-<OS>`), the plugin is in `VST3/kr@ken.vst3`.
-
-### Locally
-```
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --parallel
-```
-Output: `build/Kraken_artefacts/...`  (VST3 + Standalone).
-Needs CMake >= 3.22, a C++17 compiler and git (JUCE is fetched automatically).
-
 ## Licence note
-JUCE is AGPLv3
+JUCE is AGPLv3 / commercial. If you plan to sell closed-source, you need a JUCE licence.
 
 ## SysEx export
 EXPORT -> *Export this patch as MIDI SysEx* / *Export all my patches as SysEx* writes `.syx` files in kr@ken's own format
@@ -108,5 +92,6 @@ EXPORT -> *Export this patch as MIDI SysEx* / *Export all my patches as SysEx* w
 represent these sounds.
 
 ## License
-MIT, see [LICENSE](LICENSE). Compiled binaries include JUCE (AGPLv3 / commercial) and the VST3 SDK, see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before you distribute them.
+* **Source code: MIT**, see [LICENSE](LICENSE).
+* **Compiled plugin / app: AGPL-3.0** (it contains JUCE, used under the AGPLv3), see [BINARY_LICENSE.md](BINARY_LICENSE.md),
+  `LICENSE-AGPL-3.0.txt` and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

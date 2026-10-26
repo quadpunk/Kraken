@@ -1,35 +1,6 @@
-================================================================================
-IMPORTANT LICENSING NOTICE: SOURCE CODE VS. COMPILED BINARIES
-================================================================================
-Project: Kraken (https://github.com)
+MIT License
 
-1. ORIGINAL SOURCE CODE (MIT License)
-All original source code, configuration files, and assets contained within this 
-repository are licensed under the permissive terms of the MIT License (see the 
-full text below). You are free to copy, modify, merge, and use this source code 
-in other projects under those terms.
-
-2. COMPILED BINARIES & DEPENDENCIES (JUCE / AGPLv3)
-This project is built using the JUCE framework. Under JUCE's dual-licensing 
-model, if this project is compiled using the free, open-source tier of JUCE, 
-the resulting compiled binaries (including, but not limited to, .vst3, 
-.component, .clap, .aax, standalone executables, or application packages) are 
-strictly governed by the GNU Affero General Public License v3 (AGPLv3).
-
-Therefore, while the text-based source code is permissive MIT, any distribution 
-of the compiled "Kraken" plugin or application binaries compiled via the free 
-tier of JUCE must comply with the copyleft requirements of the AGPLv3. This 
-includes providing the prominent layout of the source code to any user 
-interacting with the binary or downloading it.
-
-If you choose to compile this repository using a valid commercial JUCE license 
-(e.g., Indie or Pro), the AGPLv3 restriction on the compiled binary is waived 
-in accordance with your commercial agreement with JUCE.
-================================================================================
-
-MIT LICENSE
------------
-Copyright (c) 2026 quadpunk
+Copyright (c) 2026 <YOUR NAME OR GITHUB HANDLE>
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

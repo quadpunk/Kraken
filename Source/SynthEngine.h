@@ -896,6 +896,7 @@ public:
     }
     void noteOff (int note) { for (auto& v : voices) if (v.active() && v.note == note) v.noteOff(); }
     void allOff() { for (auto& v : voices) if (v.active()) v.noteOff(); }
+    int activeCount() const { int c = 0; for (const auto& v : voices) if (v.active()) ++c; return c; }
 
     // Overwrites l[0..n) and r[0..n) (r may be null for mono)
     void render (float* l, float* r, int n)

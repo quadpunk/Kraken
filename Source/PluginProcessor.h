@@ -56,6 +56,8 @@ public:
     void setSelection (float startSec, float endSec, bool startMoved);   // enforces 0.05 s .. 4 s
     void analyseSelection();
     float getPlayhead() const { return playhead.load(); }
+    std::atomic<float> outPeak { 0.0f };          // output level for the UI meter (audio thread writes)
+    std::atomic<int> activeVoiceCount { 0 };
 
     // comparison lanes (message thread): peak envelopes of the selected sample region and of the current patch rendered
     // at its root note, level-matched to the sample (RMS), both scaled so the sample's peak = 1

@@ -9,19 +9,18 @@ sample library or preset bank. No audio samples, fonts or images from third part
 
 ## JUCE (not included in this repository; downloaded by CMake at build time)
 kr@ken is built with [JUCE](https://juce.com) 8 (`FetchContent`, tag 8.0.4). JUCE is dual-licensed: **AGPLv3** or a
-commercial JUCE licence.
+commercial JUCE licence. **kr@ken uses JUCE under the AGPLv3.**
 
-* The kr@ken **source code** is MIT-licensed, which is compatible with the AGPLv3.
-* A **compiled plugin or standalone app** contains JUCE. Whoever distributes such a binary must do so under JUCE's terms:
-  either the **AGPLv3** (offer the complete corresponding source code, keep the licence notices, and note that the combined
-  binary is AGPLv3), or under a **JUCE commercial licence** that the distributor holds.
-* If you publish binaries built from this repository under the AGPLv3 route, linking to this repository as the source is
-  the intended way to satisfy the source-offer requirement.
-* Always check the current terms at <https://juce.com/legal/juce-8-licence/> (and the JUCE `LICENSE.md`).
+* The kr@ken **source code** is MIT-licensed (compatible with the AGPLv3).
+* The **compiled plugin / standalone app** contains JUCE and is therefore distributed under the **AGPLv3**, with the
+  corresponding source offered at the repository named in [`BINARY_LICENSE.md`](BINARY_LICENSE.md). The CI workflow adds
+  the licence texts to every build artifact.
+* If you build your own binaries, you must either do the same or hold a JUCE commercial licence.
+* Always check the current terms at <https://juce.com/legal/juce-8-licence/> (and JUCE's own `LICENSE.md`).
 
 ## Steinberg VST3
 JUCE bundles the VST3 SDK, which is available under the GPLv3 or a proprietary Steinberg licence (see JUCE's `LICENSE.md`
-for the version you build with). "VST" is a trademark of Steinberg Media Technologies GmbH. Do not use the VST logo
+for the version you build with). Binaries released under the AGPLv3/GPLv3 route use the open-source (GPLv3) option. "VST" is a trademark of Steinberg Media Technologies GmbH. Do not use the VST logo
 without a licence from Steinberg; plain-text references such as "VST3 plugin" are normal.
 
 ## Other JUCE dependencies

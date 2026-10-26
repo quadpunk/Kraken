@@ -19,3 +19,7 @@ Tests: `tests/engine_check.cpp`, `gen_targets.cpp`, `run_new.cpp`, `eval.cpp`, `
 **Licensing / names** - MIT LICENSE, THIRD_PARTY_NOTICES.md, SPDX headers; patch names that echoed commercial products renamed (e.g. Ladder Bass, String Machine, Sub Boom, Spiky Keys, 8-bit Triangle, Twin Saw ...). Fixed 4 factory parameter values that were outside 0..1. SysEx (.syx) export/import (kr@ken format, not DX7).
 
 **Compare view** - zoomed sample region and live-rendered patch drawn under each other on one time axis (level-matched). 4 s render costs about 18 ms on average (49 ms worst of the factory patches), refreshed at most every 150 ms.
+
+**Licensing** - source MIT, compiled binaries AGPL-3.0 (BINARY_LICENSE.md); CI adds LICENSE, LICENSE-AGPL-3.0.txt (downloaded from gnu.org if not in the repo), BINARY_LICENSE.md and THIRD_PARTY_NOTICES.md to every build artifact.
+
+**UI redesign (grayscale)** - kraken moved 16 px up (drawing itself untouched), compact preset row clear of the horns, patch info + output meter + voice indicators, sonar rings / depth ruler / corner brackets behind the kraken, numbered tide pools, titled inspector panel with scale ticks, labelled sample-editor and KIN panels. Minimum window width is now 960 px.
