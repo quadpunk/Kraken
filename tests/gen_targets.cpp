@@ -100,5 +100,63 @@ int main()
             double x=0.5*(sawBL(p1,f0/SR)+sawBL(p2,f0*1.006/SR)); double a=min(1.0,t/0.004)*(t<0.7?1:exp(-(t-0.7)/0.06))*exp(-t/1.5);
             double fc=200+3200*env; double y=L.process(x,fc,0.45); y=L.process(x,fc,0.45); o[i]=(float)(y*a);} save("ladder_bass_e2", o);
     }
+
+    // ---- more varied material -----------------------------------------------------------------------
+    { // kick: sine with fast exponential pitch drop
+        int n=(int)(0.9*SR); vector<float> o(n); double ph=0;
+        for(int i=0;i<n;++i){ double t=i/SR; double f=45+120*exp(-t/0.03); ph+=f/SR; double a=exp(-t/0.28)*min(1.0,t/0.0015);
+            o[i]=(float)(tanh(1.6*sin(2*PI*ph))*a + 0.2*nd(rng)*exp(-t/0.004)); } save("kick", o);
+    }
+    { // snare: tone + high-passed noise
+        int n=(int)(0.7*SR); vector<float> o(n); double ph=0, lp=0;
+        for(int i=0;i<n;++i){ double t=i/SR; double f=185+60*exp(-t/0.02); ph+=f/SR; double x=nd(rng); double hp=x-lp; lp+=0.35*(x-lp);
+            o[i]=(float)(0.55*sin(2*PI*ph)*exp(-t/0.09) + 0.9*hp*exp(-t/0.16)); } save("snare", o);
+    }
+    { // closed hat: noise + inharmonic square cluster, high-passed
+        int n=(int)(0.4*SR); vector<float> o(n); double fr[6]={205.3,304.4,369.6,522.7,540.0,800.0}; double ph[6]={0}; double lp=0;
+        for(int i=0;i<n;++i){ double t=i/SR; double x=0; for(int k=0;k<6;++k){ ph[k]+=fr[k]*2.7/SR; ph[k]-=floor(ph[k]); x+=(ph[k]<0.5?1:-1);} x=x/6*0.6+0.6*nd(rng);
+            double hp=x-lp; lp+=0.25*(x-lp); hp=hp-0.0*lp; o[i]=(float)(hp*exp(-t/0.035)); } save("hat", o);
+    }
+    { // vowel "ah" at A3: saw through three formant band-pass biquads, light vibrato
+        int n=(int)(1.2*SR); vector<float> o(n); double ph=0; double F[3]={700,1100,2600}, Q[3]={8,10,14}, G[3]={1.0,0.7,0.35};
+        double x1[3]={0},x2[3]={0},y1[3]={0},y2[3]={0};
+        for(int i=0;i<n;++i){ double t=i/SR; double f=220*pow(2.0,0.15*sin(2*PI*5.2*t)/12.0); ph+=f/SR; ph-=floor(ph); double x=sawBL(ph,f/SR); double y=0;
+            for(int k=0;k<3;++k){ double w=2*PI*F[k]/SR, al=sin(w)/(2*Q[k]); double b0=al,b2=-al,a0=1+al,a1=-2*cos(w),a2=1-al;
+                double yk=(b0*x+b2*x2[k]-a1*y1[k]-a2*y2[k])/a0; x2[k]=x1[k]; x1[k]=x; y2[k]=y1[k]; y1[k]=yk; y+=G[k]*yk; }
+            double a=min(1.0,t/0.08)*(t<1.0?1:exp(-(t-1.0)/0.05)); o[i]=(float)(y*a);} save("vowel_ah_a3", o);
+    }
+    { // bell: inharmonic partials
+        int n=(int)(1.5*SR); vector<float> o(n); double f0=523.25; double r[5]={1.0,2.76,5.40,8.93,13.3}, d[5]={1.2,0.7,0.4,0.25,0.12}, a[5]={1,0.6,0.45,0.3,0.15};
+        for(int i=0;i<n;++i){ double t=i/SR; double x=0; for(int k=0;k<5;++k) x+=a[k]*sin(2*PI*f0*r[k]*t)*exp(-t/d[k]); o[i]=(float)(x*min(1.0,t/0.001)); } save("bell_c5", o);
+    }
+    { // string ensemble: 5 detuned saws, slow attack, soft lowpass
+        int n=(int)(1.3*SR); vector<float> o(n); double ph[5]={0,.2,.4,.6,.8}; double det[5]={-0.12,-0.06,0,0.07,0.13}; Ladder L; double f0=220;
+        for(int i=0;i<n;++i){ double t=i/SR; double x=0; for(int k=0;k<5;++k){ double f=f0*pow(2.0,det[k]/12.0)*(1+0.002*sin(2*PI*(4.5+0.3*k)*t)); ph[k]+=f/SR; ph[k]-=floor(ph[k]); x+=sawBL(ph[k],f/SR);} 
+            double y=L.process(x/5,3200,0.05); y=L.process(x/5,3200,0.05); o[i]=(float)(y*min(1.0,t/0.3)*(t<1.1?1:exp(-(t-1.1)/0.1))); } save("strings_a3", o);
+    }
+    { // brass stab at E3: two saws, cutoff opens fast
+        int n=(int)(0.9*SR); vector<float> o(n); double p1=0,p2=0.4; Ladder L; double f0=164.81;
+        for(int i=0;i<n;++i){ double t=i/SR; p1+=f0/SR;p1-=floor(p1);p2+=f0*1.004/SR;p2-=floor(p2); double x=0.5*(sawBL(p1,f0/SR)+sawBL(p2,f0*1.004/SR));
+            double fc=500+3500*(t<0.07?t/0.07:exp(-(t-0.07)/0.25)); double y=L.process(x,fc,0.12); y=L.process(x,fc,0.12); o[i]=(float)(y*min(1.0,t/0.01)*exp(-t/0.5)); } save("brass_stab_e3", o);
+    }
+    { // wobble bass at E1 (41.2 Hz): saw through ladder with LFO on cutoff
+        int n=(int)(1.3*SR); vector<float> o(n); double ph=0; Ladder L; double f0=41.2;
+        for(int i=0;i<n;++i){ double t=i/SR; ph+=f0/SR;ph-=floor(ph); double x=sawBL(ph,f0/SR); double fc=250*pow(2.0,2.6*sin(2*PI*3.0*t)+1.2);
+            double y=L.process(x,fc,0.5); y=L.process(x,fc,0.5); o[i]=(float)(tanh(1.5*y)*min(1.0,t/0.005)*(t<1.1?1:exp(-(t-1.1)/0.05))); } save("wobble_e1", o);
+    }
+    { // drawbar organ at C4 with key click
+        int n=(int)(1.0*SR); vector<float> o(n); double f0=261.63; double h[6]={1,2,3,4,6,8}, g[6]={1,0.8,0.5,0.35,0.25,0.15};
+        for(int i=0;i<n;++i){ double t=i/SR; double x=0; for(int k=0;k<6;++k) x+=g[k]*sin(2*PI*f0*h[k]*t); x*= (1+0.06*sin(2*PI*6.3*t)); x+=0.25*nd(rng)*exp(-t/0.006);
+            o[i]=(float)(x*min(1.0,t/0.004)*(t<0.8?1:exp(-(t-0.8)/0.03))); } save("organ_c4", o);
+    }
+    { // noise riser: band-pass noise sweeping up
+        int n=(int)(1.1*SR); vector<float> o(n); double lp1=0,bp=0; 
+        for(int i=0;i<n;++i){ double t=i/SR; double fc=300*pow(14.0,t/1.1); double f=2*sin(PI*fc/SR); double x=nd(rng); lp1+=f*bp; double hp=x-lp1-0.35*bp; bp+=f*hp; o[i]=(float)(bp*min(1.0,t/0.2)); } save("riser", o);
+    }
+    { // PWM lead at A4
+        int n=(int)(1.0*SR); vector<float> o(n); double ph=0; Ladder L; double f0=440;
+        for(int i=0;i<n;++i){ double t=i/SR; ph+=f0/SR; ph-=floor(ph); double pw=0.5+0.35*sin(2*PI*1.2*t); double x=sawBL(ph,f0/SR)-sawBL(fmod(ph+pw,1.0),f0/SR);
+            double y=L.process(x*0.6,6000,0.1); y=L.process(x*0.6,6000,0.1); o[i]=(float)(y*min(1.0,t/0.01)*(t<0.8?1:exp(-(t-0.8)/0.05))); } save("pwm_lead_a4", o);
+    }
     printf("targets written\n");
 }

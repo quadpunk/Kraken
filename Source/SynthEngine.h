@@ -36,9 +36,9 @@ enum : int
     F_CUTOFF, F_RES, F_MODE, F_SLOPE, F_KEYTRK, F_ENVAMT, F_DRIVE, F_VEL,
     COMB_MIX, COMB_TUNE, COMB_FB, VOWEL_MIX, VOWEL_POS, VOWEL_Q,
     // ARM 5: AMP + PITCH ENV
-    AMP_A, AMP_D, AMP_S, AMP_R, PITCH_AMT, PITCH_DEC, AMP_VEL, AMP_HOLD,
+    AMP_A, AMP_D, AMP_S, AMP_R, PITCH_AMT, PITCH_DEC, AMP_VEL, AMP_HOLD, AMP_FALL, AMP_BURSTS, BURST_T,
     // ARM 6: FILTER ENV + LFO
-    FE_A, FE_D, FE_S, FE_R, LFO_RATE, LFO_VIB, LFO_FILT, LFO_TREM, LFO_SHAPE, LFO_FADE,
+    FE_A, FE_D, FE_S, FE_R, LFO_RATE, LFO_VIB, LFO_FILT, LFO_TREM, LFO_SHAPE, LFO_FADE, FE_FALL, L2_RATE, L2_SHAPE, L2_VIB, L2_FILT, L2_TREM,
     // ARM 7: FX
     DIST_AMT, DIST_FOLD, CHO_MIX, CHO_RATE, CHO_DEPTH, DLY_TIME, DLY_FB, DLY_MIX, REV_SIZE, REV_DAMP, REV_MIX,
     OUT_TONE, OUT_LOW,
@@ -51,11 +51,14 @@ constexpr int kNumArms = 8;
 constexpr float kPi = 3.14159265358979f;
 constexpr float kTwoPi = 6.28318530717959f;
 
-static_assert (kNumParams == 77, "parameter table out of sync");
+static_assert (kNumParams == 86, "parameter table out of sync");
+
+// older layouts -> current. v1 = 77 parameters, v2 = 79 (sustain fall), v3 = 86 (bursts, second LFO). Missing ones get defaults.
+inline std::vector<float> upgradeParams (const std::vector<float>& old, int fromVersion);
 
 constexpr int kArmFirst[kNumArms] = { P::A_SHAPE, P::B_SHAPE, P::C_TILT, P::SUB_LEVEL,
                                       P::F_CUTOFF, P::AMP_A, P::FE_A, P::DIST_AMT };
-constexpr int kArmCount[kNumArms] = { 8, 8, 8, 8, 14, 8, 10, 13 };
+constexpr int kArmCount[kNumArms] = { 8, 8, 8, 8, 14, 11, 16, 13 };
 
 inline int armOf (int param)
 {
@@ -80,8 +83,8 @@ inline const char* paramShort (int i)
         "sub", "noise", "color", "sub shape", "tonal", "transient", "trans dec", "sub oct",
         "cutoff", "reso", "mode", "slope", "keytrack", "env amt", "drive", "vel",
         "comb", "comb tune", "comb fb", "vowel", "vowel pos", "vowel q",
-        "attack", "decay", "sustain", "release", "pitch env", "pitch dec", "vel sens", "hold",
-        "f attack", "f decay", "f sustain", "f release", "lfo rate", "vibrato", "lfo filter", "tremolo", "lfo shape", "lfo fade",
+        "attack", "decay", "sustain", "release", "pitch env", "pitch dec", "vel sens", "hold", "sus fall", "bursts", "burst gap",
+        "f attack", "f decay", "f sustain", "f release", "lfo rate", "vibrato", "lfo filter", "tremolo", "lfo shape", "lfo fade", "f sus fall", "lfo2 rate", "lfo2 shape", "lfo2 vib", "lfo2 filt", "lfo2 trem",
         "distort", "fold", "chorus", "cho rate", "cho depth", "dly time", "dly fb", "delay", "rev size", "rev damp", "reverb",
         "tone", "low" };
     return n[i];
@@ -103,8 +106,8 @@ inline Patch defaultPatch()
         .3f, 0.f, .5f, .6f, 0.f, .4f, 0.f, .5f,                                     // C
         0.f, 0.f, .5f, 0.f, 0.f, 0.f, .2f, .3f,                                     // noise+sub
         .75f, .15f, 0.f, 0.f, .3f, .55f, 0.f, .2f, 0.f, .5f, .5f, 0.f, .3f, .4f,    // filter
-        .03f, .5f, .7f, .3f, .5f, .3f, .5f, 0.f,                                    // amp
-        0.f, .5f, .3f, .3f, .45f, 0.f, 0.f, 0.f, 0.f, .2f,                          // mod
+        .03f, .5f, .7f, .3f, .5f, .3f, .5f, 0.f, 0.f, 0.f, .3f,                     // amp (+ sustain fall: 0 = hold forever, bursts 0 = 1, burst gap)
+        0.f, .5f, .3f, .3f, .45f, 0.f, 0.f, 0.f, 0.f, .2f, 0.f, .4f, 0.f, 0.f, 0.f, 0.f,   // mod (+ filter sustain fall, LFO 2)
         0.f, 0.f, 0.f, .3f, .4f, .5f, .3f, 0.f, .5f, .5f, 0.f,                     // fx
         1.f, .5f };                                                                 // output tone (open) / low shelf (flat)
     Patch pt;
@@ -112,6 +115,29 @@ inline Patch defaultPatch()
     pt.level = 0.7f;
     pt.tune = 0.0f;
     return pt;
+}
+
+inline std::vector<float> upgradeParams (const std::vector<float>& old, int fromVersion)
+{
+    std::vector<float> v = old;
+    if (fromVersion < 2)              // 77 -> 79: AMP_FALL inserted after the amp group, FE_FALL after the filter-env / LFO group
+    {
+        std::vector<float> out (79, 0.0f);   // the two new parameters default to 0
+        for (size_t i = 0; i < v.size() && i < 77; ++i) out[i < 54 ? i : (i < 64 ? i + 1 : i + 2)] = v[i];
+        v = out;
+    }
+    if (fromVersion < 3)              // 79 -> 86: AMP_BURSTS, BURST_T after AMP_FALL; L2_* after FE_FALL
+    {
+        const Patch d = defaultPatch();
+        std::vector<float> out (d.p.begin(), d.p.end());
+        for (size_t i = 0; i < v.size() && i < 79; ++i)
+        {
+            const size_t j = i < 55 ? i : (i < 66 ? i + 2 : i + 7);
+            if (j < out.size()) out[j] = v[i];
+        }
+        v = out;
+    }
+    return v;
 }
 
 //==============================================================================
@@ -128,11 +154,13 @@ inline float fastSin (float ph)
 
 struct EnvParams
 {
-    float attInc = 0.01f, decCoef = 0.999f, sus = 0.7f, relCoef = 0.999f;
+    float attInc = 0.01f, decCoef = 0.999f, sus = 0.7f, relCoef = 0.999f, fallCoef = 1.0f;   // fallCoef < 1: the sustain level keeps sinking
     int holdSamples = 0;
+    int bursts = 1, burstSpacing = 0;     // bursts > 1: the level is re-triggered that many times, burstSpacing samples apart (claps)
+    float burstCoef = 0.99f;
 };
 
-inline EnvParams makeEnv (float a, float d, float s, float r, double sr, int hold = 0)
+inline EnvParams makeEnv (float a, float d, float s, float r, double sr, int hold = 0, float fall01 = 0.0f, int bursts = 1, float burstGapSec = 0.01f)
 {
     EnvParams e;
     e.attInc = 1.0f / (std::max (a, 0.0005f) * (float) sr);
@@ -140,6 +168,18 @@ inline EnvParams makeEnv (float a, float d, float s, float r, double sr, int hol
     e.sus = s;
     e.relCoef = std::exp (-4.6f / (std::max (r, 0.005f) * (float) sr));
     e.holdSamples = hold;
+    if (fall01 > 0.02f)   // time for the sustain level to fall by 20 dB: 20 s (barely) ... 0.05 s
+    {
+        const float t20 = 20.0f * std::pow (0.05f / 20.0f, fall01);
+        e.fallCoef = std::exp (-2.3026f / (t20 * (float) sr));
+    }
+    if (bursts > 1)
+    {
+        e.bursts = bursts;
+        e.burstSpacing = std::max (8, (int) (burstGapSec * (float) sr));
+        e.burstCoef = std::exp (-2.3026f / (0.8f * (float) e.burstSpacing));   // each early burst dies by 20 dB before the next
+        e.holdSamples = 0;
+    }
     return e;
 }
 
@@ -167,6 +207,7 @@ struct Derived
     EnvParams amp, flt;
     float pitchAmt = 0, pitchDecCoef8 = 0.9f, ampVel = 0;
     float lfoRate = 1, lfoVib = 0, lfoFilt = 0, lfoTrem = 0, lfoShape = 0, lfoFade = 0;
+    float lfo2Rate = 1, lfo2Vib = 0, lfo2Filt = 0, lfo2Trem = 0, lfo2Shape = 0;
     // fx
     float distAmt = 0, foldAmt = 0, choMix = 0, choRate = 1, choDepth = 0;
     float dlyTime = 0.3f, dlyFb = 0, dlyMix = 0, revSize = 0.5f, revDamp = 0.5f, revMix = 0;
@@ -215,9 +256,9 @@ struct Derived
         vowelMix = p[VOWEL_MIX]; vowelPos = p[VOWEL_POS]; vowelQ = p[VOWEL_Q];
 
         amp = makeEnv (expMap (p[AMP_A], 0.0008f, 5.0f), expMap (p[AMP_D], 0.005f, 8.0f), p[AMP_S],
-                       expMap (p[AMP_R], 0.005f, 8.0f), sr, (int) (p[AMP_HOLD] * p[AMP_HOLD] * (float) sr));
+                       expMap (p[AMP_R], 0.005f, 8.0f), sr, (int) (p[AMP_HOLD] * p[AMP_HOLD] * (float) sr), p[AMP_FALL], 1 + (int) (p[AMP_BURSTS] * 5.99f), expMap (p[BURST_T], 0.004f, 0.04f));
         flt = makeEnv (expMap (p[FE_A], 0.0008f, 5.0f), expMap (p[FE_D], 0.005f, 8.0f), p[FE_S],
-                       expMap (p[FE_R], 0.005f, 8.0f), sr);
+                       expMap (p[FE_R], 0.005f, 8.0f), sr, 0, p[FE_FALL]);
         const float xp = p[PITCH_AMT] * 2.0f - 1.0f;
         pitchAmt = xp * std::abs (xp) * 48.0f;
         pitchDecCoef8 = std::exp (-4.6f * 8.0f / (expMap (p[PITCH_DEC], 0.004f, 1.5f) * (float) sr));
@@ -229,6 +270,11 @@ struct Derived
         lfoTrem = p[LFO_TREM];
         lfoShape = p[LFO_SHAPE];
         lfoFade = p[LFO_FADE] * p[LFO_FADE] * 3.0f;
+        lfo2Rate = expMap (p[L2_RATE], 0.1f, 30.0f);
+        lfo2Vib = p[L2_VIB] * p[L2_VIB] * 4.0f;
+        lfo2Filt = p[L2_FILT] * 3.0f;
+        lfo2Trem = p[L2_TREM];
+        lfo2Shape = p[L2_SHAPE];
 
         distAmt = p[DIST_AMT]; foldAmt = p[DIST_FOLD];
         choMix = p[CHO_MIX]; choRate = expMap (p[CHO_RATE], 0.1f, 6.0f); choDepth = p[CHO_DEPTH];
@@ -319,24 +365,39 @@ struct SVF // TPT state variable filter
 
 struct Env
 {
-    enum Stage { Idle, Att, Hold, Dec, Sus, Rel };
+    enum Stage { Idle, Att, Hold, Dec, Sus, Rel, Burst };
     Stage stage = Idle;
     float level = 0.0f;
     int holdCount = 0;
+    float fall = 1.0f;
+    int clock = 0, burstIdx = 0;
 
-    void noteOn (const EnvParams& e) { stage = Att; holdCount = e.holdSamples; }
+    void noteOn (const EnvParams& e) { stage = Att; holdCount = e.holdSamples; fall = 1.0f; clock = 0; burstIdx = 0; }
     void noteOff() { if (stage != Idle) stage = Rel; }
     float tick (const EnvParams& e)
     {
+        if (e.bursts > 1 && burstIdx < e.bursts - 1 && stage != Idle && stage != Rel)
+        {
+            if (++clock >= (burstIdx + 1) * e.burstSpacing)
+            {
+                ++burstIdx;
+                level = 1.0f;
+                fall = 1.0f;
+                stage = burstIdx < e.bursts - 1 ? Burst : Dec;
+            }
+        }
         switch (stage)
         {
             case Idle: break;
             case Att: level += e.attInc;
-                      if (level >= 1.0f) { level = 1.0f; stage = holdCount > 0 ? Hold : Dec; } break;
+                      if (level >= 1.0f) { level = 1.0f; stage = e.bursts > 1 ? Burst : (holdCount > 0 ? Hold : Dec); } break;
+            case Burst: level *= e.burstCoef; break;
             case Hold: level = 1.0f; if (--holdCount <= 0) stage = Dec; break;
-            case Dec: level = e.sus + (level - e.sus) * e.decCoef;
-                      if (level - e.sus < 1.0e-4f) { level = e.sus; stage = Sus; } break;
-            case Sus: level = e.sus; break;
+            case Dec: { fall *= e.fallCoef;
+                        const float tgt = e.sus * fall;
+                        level = tgt + (level - tgt) * e.decCoef;
+                        if (level - tgt < 1.0e-4f) { level = tgt; stage = Sus; } } break;
+            case Sus: fall *= e.fallCoef; level = e.sus * fall; break;
             case Rel: level *= e.relCoef; if (level < 1.0e-4f) { level = 0.0f; stage = Idle; } break;
         }
         return level;
@@ -388,6 +449,7 @@ struct Voice
 
     Env amp, fl;
     float lfoPhase = 0, lfoSH = 0, lfoFadeG = 0, lfoAmp = 1, pe = 1;
+    float lfo2Phase = 0, lfo2SH = 0;
     float driftState = 0, driftAlpha = 0.002f, driftScale = 500.0f, driftMulA = 1, driftMulB = 1;
     float pitchMul = 1.0f;
     int ctr = 0;
@@ -448,6 +510,7 @@ struct Voice
         amp.noteOn (d.amp);
         fl.noteOn (d.flt);
         lfoPhase = 0.0f; lfoSH = rnd(); lfoFadeG = 0.0f; lfoAmp = 1.0f; pe = 1.0f;
+        lfo2Phase = 0.0f; lfo2SH = rnd();
         driftState = 0.0f;
         driftAlpha = 100.0f / (float) sr;
         driftScale = 500.0f * std::sqrt (0.0021f / driftAlpha);
@@ -459,7 +522,7 @@ struct Voice
     void noteOff() { amp.noteOff(); fl.noteOff(); note = -1; }
 
     //--------------------------------------------------------------------------
-    float lfoWave (float shape, float ph) const
+    float lfoWave (float shape, float ph, float sh) const
     {
         const float s = std::min (std::max (shape, 0.0f), 0.9999f) * 3.0f;
         const int i = (int) s;
@@ -471,7 +534,7 @@ struct Voice
                 case 0: return fastSin (ph);
                 case 1: return 1.0f - 4.0f * std::abs (ph - 0.5f);
                 case 2: return ph < 0.5f ? 1.0f : -1.0f;
-                default: return lfoSH;
+                default: return sh;
             }
         };
         return w (i) * (1.0f - f) + w (i + 1) * f;
@@ -484,8 +547,11 @@ struct Voice
         lfoPhase += d.lfoRate * cdt;
         if (lfoPhase >= 1.0f) { lfoPhase -= std::floor (lfoPhase); lfoSH = rnd(); }
         lfoFadeG = d.lfoFade > 0.001f ? std::min (1.0f, lfoFadeG + cdt / d.lfoFade) : 1.0f;
-        const float lfo = lfoWave (d.lfoShape, lfoPhase) * lfoFadeG;
-        lfoAmp = 1.0f - d.lfoTrem * 0.5f * (1.0f - lfo);
+        const float lfo = lfoWave (d.lfoShape, lfoPhase, lfoSH) * lfoFadeG;
+        lfo2Phase += d.lfo2Rate * cdt;
+        if (lfo2Phase >= 1.0f) { lfo2Phase -= std::floor (lfo2Phase); lfo2SH = rnd(); }
+        const float lfo2 = lfoWave (d.lfo2Shape, lfo2Phase, lfo2SH);
+        lfoAmp = (1.0f - d.lfoTrem * 0.5f * (1.0f - lfo)) * (1.0f - d.lfo2Trem * 0.5f * (1.0f - lfo2));
 
         pe *= d.pitchDecCoef8;
         driftState += driftAlpha * (rnd() - driftState);
@@ -493,7 +559,7 @@ struct Voice
         driftMulA = std::exp2 (cents * 0.7f / 1200.0f);
         driftMulB = std::exp2 (-cents / 1200.0f);
 
-        pitchMul = std::exp2 ((d.pitchAmt * pe + d.lfoVib * lfo) * (1.0f / 12.0f));
+        pitchMul = std::exp2 ((d.pitchAmt * pe + d.lfoVib * lfo + d.lfo2Vib * lfo2) * (1.0f / 12.0f));
         const float f = freq * pitchMul;
 
         const int n = d.uniN;
@@ -505,7 +571,7 @@ struct Voice
         }
 
         float fc = d.cutoff * std::pow (std::max (f, 1.0f) / 261.63f, d.keyTrk);
-        fc *= std::exp2 (d.fenvOct * fl.level + d.lfoFilt * lfo + d.fvel * (vel - 1.0f) * 4.0f);
+        fc *= std::exp2 (d.fenvOct * fl.level + d.lfoFilt * lfo + d.lfo2Filt * lfo2 + d.fvel * (vel - 1.0f) * 4.0f);
         f1a.set (fc, d.res, (float) sr);
         f1b.set (fc, d.res, (float) sr);
 

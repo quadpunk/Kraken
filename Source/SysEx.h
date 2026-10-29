@@ -4,7 +4,7 @@
 // This is kr@ken's OWN format (it is NOT a DX7 / any other synth's format - those cannot represent these patches).
 // It uses the "non-commercial / educational" manufacturer ID 0x7D, so it never clashes with a real device.
 //
-//   F0 7D 'K' 'R' 'K' 'N' <version=01> <type=01 patch>
+//   F0 7D 'K' 'R' 'K' 'N' <version=03> <type=01 patch>      (versions 01 and 02 = older parameter layouts, still readable)
 //   <name: 24 ASCII bytes, space padded> <root note> <tune cents + 64> <level: 2 bytes, 14 bit>
 //   <parameter count> <count x 2 bytes, 14 bit, 0..16383 = 0..1>
 //   <checksum: (128 - (sum of all bytes between the type byte and the checksum) mod 128) mod 128>  F7
@@ -26,6 +26,7 @@ struct Data
     int tuneCents = 0;                 // -50..+50
     float level = 0.7f;
     std::vector<float> values;         // normalised 0..1, in engine parameter order
+    int version = 3;                   // 1 / 2 = older parameter layouts (77 / 79 values), the caller upgrades them
 };
 
 inline void put14 (std::vector<uint8_t>& v, float x)
@@ -37,7 +38,7 @@ inline void put14 (std::vector<uint8_t>& v, float x)
 
 inline std::vector<uint8_t> encode (const Data& d)
 {
-    std::vector<uint8_t> out { 0xF0, 0x7D, 'K', 'R', 'K', 'N', 0x01, 0x01 };
+    std::vector<uint8_t> out { 0xF0, 0x7D, 'K', 'R', 'K', 'N', 0x03, 0x01 };
     const size_t bodyStart = out.size();
     for (size_t i = 0; i < 24; ++i)
     {
@@ -61,7 +62,7 @@ inline std::vector<uint8_t> encode (const Data& d)
 inline bool decode (const uint8_t* p, size_t n, Data& d, size_t* consumed = nullptr)
 {
     if (n < 8 + 24 + 5 + 2 || p[0] != 0xF0 || p[1] != 0x7D || p[2] != 'K' || p[3] != 'R' || p[4] != 'K' || p[5] != 'N'
-        || p[6] != 0x01 || p[7] != 0x01)
+        || (p[6] < 0x01 || p[6] > 0x03) || p[7] != 0x01)
         return false;
     size_t end = 8;
     while (end < n && p[end] != 0xF7) ++end;
@@ -74,6 +75,7 @@ inline bool decode (const uint8_t* p, size_t n, Data& d, size_t* consumed = null
 
     size_t i = 8;
     d = Data();
+    d.version = p[6];
     d.name.assign ((const char*) p + i, 24);
     while (! d.name.empty() && d.name.back() == ' ') d.name.pop_back();
     i += 24;

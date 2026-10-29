@@ -13,6 +13,8 @@
  #include <emmintrin.h>
 #endif
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <numeric>
 #include <random>
 #include <thread>
@@ -224,6 +226,17 @@ const std::array<float, kBands>& bandCentres()
     return c;
 }
 
+const std::array<float, kBands>& bandCentresLog2()
+{
+    static const auto c = []
+    {
+        std::array<float, kBands> a {};
+        for (int j = 0; j < kBands; ++j) a[(size_t) j] = std::log2 (bandCentres()[(size_t) j]);
+        return a;
+    }();
+    return c;
+}
+
 const BandMap& bandMap (int r)
 {
     static const auto maps = []
@@ -399,6 +412,376 @@ const std::array<float, kNumParams>& priorWeights()
     return w;
 }
 
+// Loss weights. Compile with -DKRAKEN_TUNING_ENV to override them from environment variables (used by tests/).
+struct Tuning
+{
+    float asym = 0.6f;                                    // extra penalty (0..) when the candidate is brighter than the target
+    float wSpec[3] = { 0.55f, 0.90f, 0.90f };
+    float wEnv = 0.50f, wFlux = 0.20f, wCent = 0.35f, wLow = 0.30f, wHarm = 0.45f, priorScale = 1.0f;
+    float excessDb = 15.0f, excessW = 0.9f;               // candidate louder than target by more than this: weight at least excessW
+    bool extraSeeds = true, halving = false;           // search features (switchable for experiments)
+};
+
+const Tuning& tuning()
+{
+    static const Tuning t = []
+    {
+        Tuning x;
+       #ifdef KRAKEN_TUNING_ENV
+        auto env = [] (const char* n, float d) { const char* v = std::getenv (n); return v != nullptr ? (float) std::atof (v) : d; };
+        x.asym = env ("KT_ASYM", x.asym);
+        x.wSpec[0] = env ("KT_S0", x.wSpec[0]); x.wSpec[1] = env ("KT_S1", x.wSpec[1]); x.wSpec[2] = env ("KT_S2", x.wSpec[2]);
+        x.wEnv = env ("KT_ENV", x.wEnv); x.wFlux = env ("KT_FLUX", x.wFlux); x.wCent = env ("KT_CENT", x.wCent);
+        x.extraSeeds = env ("KT_NOEXTRA", 0.0f) < 0.5f; x.halving = env ("KT_SH", 0.0f) > 0.5f;
+        x.excessDb = env ("KT_EXDB", x.excessDb); x.excessW = env ("KT_EXW", x.excessW);
+        x.wLow = env ("KT_LOW", x.wLow); x.wHarm = env ("KT_HARM", x.wHarm); x.priorScale = env ("KT_PRIOR", x.priorScale);
+       #endif
+        return x;
+    }();
+    return t;
+}
+
+// Modulation estimate: is the sound wobbling (filter LFO), vibrato-ing or tremolo-ing, how fast and how deep?
+struct ModEstimate
+{
+    bool filt = false, vib = false, trem = false;
+    float rate = 5.0f;                       // Hz (of the strongest detected modulation)
+    float filtOct = 0.0f, vibSt = 0.0f, tremDepth = 0.0f;   // peak depths
+    float filtScore = 0.0f, vibScore = 0.0f, tremScore = 0.0f;
+};
+
+// remove slow trends (moving average of 2*half+1 samples) and the mean
+void detrend (std::vector<float>& x, int half)
+{
+    const int n = (int) x.size();
+    std::vector<double> cs ((size_t) n + 1, 0.0);
+    for (int i = 0; i < n; ++i) cs[(size_t) i + 1] = cs[(size_t) i] + x[(size_t) i];
+    std::vector<float> out ((size_t) n);
+    for (int i = 0; i < n; ++i)
+    {
+        const int a = std::max (0, i - half), b = std::min (n, i + half + 1);
+        out[(size_t) i] = x[(size_t) i] - (float) ((cs[(size_t) b] - cs[(size_t) a]) / (double) (b - a));
+    }
+    x = out;
+}
+
+// dominant period (in samples of x) by autocorrelation; false if the trajectory is not clearly periodic
+bool findPeriod (const std::vector<float>& x, int minLag, int maxLag, float& lagOut, float& scoreOut)
+{
+    const int n = (int) x.size();
+    maxLag = std::min (maxLag, n / 2);
+    if (n < 12 || maxLag <= minLag + 1) return false;
+    double e = 0;
+    for (float v : x) e += (double) v * v;
+    if (e < 1.0e-12) return false;
+    std::vector<float> r ((size_t) maxLag + 2, 0.0f);
+    for (int l = 1; l <= maxLag + 1 && l < n; ++l)
+    {
+        double s = 0;
+        for (int i = 0; i + l < n; ++i) s += (double) x[(size_t) i] * x[(size_t) (i + l)];
+        r[(size_t) l] = (float) (s / e * (double) n / (double) (n - l));
+    }
+    float best = 0.0f;
+    for (int l = minLag; l <= maxLag; ++l)
+        if (r[(size_t) l] > r[(size_t) l - 1] && r[(size_t) l] >= r[(size_t) l + 1]) best = std::max (best, r[(size_t) l]);
+    if (best < 0.35f) return false;
+    for (int l = minLag; l <= maxLag; ++l)   // smallest lag that is nearly as good (avoids picking multiples)
+        if (r[(size_t) l] > r[(size_t) l - 1] && r[(size_t) l] >= r[(size_t) l + 1] && r[(size_t) l] >= 0.8f * best)
+        {
+            const float a = r[(size_t) l - 1], b = r[(size_t) l], c = r[(size_t) l + 1];
+            const float den = a - 2.0f * b + c;
+            lagOut = (float) l + (std::abs (den) > 1.0e-9f ? 0.5f * (a - c) / den : 0.0f);
+            scoreOut = b;
+            return true;
+        }
+    return false;
+}
+
+float stdDev (const std::vector<float>& x)
+{
+    double e = 0;
+    for (float v : x) e += (double) v * v;
+    return x.empty() ? 0.0f : (float) std::sqrt (e / (double) x.size());
+}
+
+ModEstimate estimateModulation (const Feat& tf, const std::vector<float>& tgt, float lag)
+{
+    ModEstimate m;
+    float bestScore = 0.0f;
+    auto consider = [&] (float rate, float score) { if (score > bestScore) { bestScore = score; m.rate = rate; } };
+
+    // 1. brightness (spectral centroid) trajectory -> filter LFO
+    {
+        const Spec& sp = tf.spec[1];
+        const float hopSec = (float) kFftHop[1] / (float) kSR;
+        std::vector<float> c ((size_t) sp.frames, 0.0f);
+        float prev = 0.0f; int valid = 0;
+        for (int f = 0; f < sp.frames; ++f)
+        {
+            double pw = 0, pl = 0;
+            for (int b = 0; b < kBands; ++b)
+            {
+                if (! bandMap (1).valid[(size_t) b]) continue;
+                const float p = std::pow (10.0f, std::max (sp.db[(size_t) f * kBands + (size_t) b], sp.peak - 60.0f) * 0.1f);
+                pw += p; pl += p * bandCentresLog2()[(size_t) b];
+            }
+            if (sp.loud[(size_t) f] > sp.peakLoud - 35.0f && pw > 0) { prev = (float) (pl / pw); ++valid; }
+            c[(size_t) f] = prev;
+        }
+        if (valid >= 14)
+        {
+            detrend (c, std::max (3, (int) (0.5f / hopSec)));
+            float lg, sc;
+            if (findPeriod (c, 3, (int) (2.0f / hopSec), lg, sc))
+            {
+                const float depth = 1.414f * stdDev (c);
+                if (depth > 0.10f) { m.filt = true; m.filtOct = depth; m.filtScore = sc; consider (1.0f / (lg * hopSec), sc); }
+            }
+        }
+    }
+
+    // 2. pitch track -> vibrato
+    {
+        const int W = 1536, hop = 1024;
+        const int lo = std::max (4, (int) (lag * 0.92f)), hi = (int) (lag * 1.08f) + 1;
+        const int n = (int) tgt.size();
+        if (lag > 12.0f && hi - lo >= 3 && n > W + hi + 8)
+        {
+            std::vector<float> cents;
+            float prevC = 0.0f;
+            std::vector<float> d ((size_t) hi + 2);
+            for (int s0 = 0; s0 + W + hi + 2 < n; s0 += hop)
+            {
+                double en = 0;
+                for (int j = 0; j < W; ++j) en += (double) tgt[(size_t) (s0 + j)] * tgt[(size_t) (s0 + j)];
+                float bestD = 1.0e30f; int bt = -1;
+                for (int tau = lo - 1; tau <= hi + 1; ++tau)
+                {
+                    double sd = 0;
+                    for (int j = 0; j < W; ++j) { const float df = tgt[(size_t) (s0 + j)] - tgt[(size_t) (s0 + j + tau)]; sd += (double) df * df; }
+                    d[(size_t) tau] = (float) sd;
+                    if (tau >= lo && tau <= hi && (float) sd < bestD) { bestD = (float) sd; bt = tau; }
+                }
+                if (bt > lo && bt < hi && en > 1.0e-4 * W && bestD < 0.35 * 2.0 * en)
+                {
+                    const float a = d[(size_t) bt - 1], b = d[(size_t) bt], c2 = d[(size_t) bt + 1];
+                    const float den = a - 2.0f * b + c2;
+                    const float tauF = (float) bt + (std::abs (den) > 1.0e-9f ? 0.5f * (a - c2) / den : 0.0f);
+                    prevC = 1200.0f * std::log2 (lag / tauF);
+                }
+                cents.push_back (prevC);
+            }
+            if (cents.size() >= 10)
+            {
+                const float hopSec = (float) hop / (float) kSR;
+                detrend (cents, std::max (3, (int) (0.5f / hopSec)));
+                float lg, sc;
+                if (findPeriod (cents, 3, (int) (1.5f / hopSec), lg, sc))
+                {
+                    const float st = 1.414f * stdDev (cents) / 100.0f;
+                    if (st > 0.04f) { m.vib = true; m.vibSt = st; m.vibScore = sc; consider (1.0f / (lg * hopSec), sc); }
+                }
+            }
+        }
+    }
+
+    // 3. loudness trajectory -> tremolo (RMS window of >= 3 periods so low notes do not alias)
+    {
+        const int hop = kEnvHop;
+        const int win = std::min (4410, std::max (882, (int) (3.0f * lag)));
+        const int n = (int) tgt.size();
+        std::vector<float> e;
+        for (int s0 = 0; s0 + win <= n; s0 += hop)
+        {
+            double en = 0;
+            for (int j = 0; j < win; ++j) en += (double) tgt[(size_t) (s0 + j)] * tgt[(size_t) (s0 + j)];
+            e.push_back (10.0f * std::log10 ((float) (en / win) + 1.0e-9f));
+        }
+        if (e.size() >= 30)
+        {
+            const float pk = *std::max_element (e.begin(), e.end());
+            for (auto& v : e) v = std::max (v, pk - 30.0f);
+            const float hopSec = (float) hop / (float) kSR;
+            detrend (e, std::max (3, (int) (0.5f / hopSec)));
+            float lg, sc;
+            if (findPeriod (e, 3, (int) (1.5f / hopSec), lg, sc))
+            {
+                const float rate = 1.0f / (lg * hopSec);
+                const float ppDb = 2.0f * 1.414f * stdDev (e) ;
+                const float depth = 1.0f - std::pow (10.0f, -ppDb / 10.0f);
+                if (sc >= 0.45f && ppDb > 1.0f && depth < 0.95f && rate * (float) n / (float) kSR >= 2.2f)
+                { m.trem = true; m.tremDepth = depth; m.tremScore = sc; consider (rate, sc); }
+            }
+        }
+    }
+    return m;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Amplitude envelope estimate -> AMP_A / AMP_D / AMP_S / AMP_R (normalised engine parameters)
+struct AmpEnvEstimate { float a = 0.02f, d = 0.5f, s = 0.8f, r = 0.3f, fall = 0.0f; bool valid = false; };
+
+AmpEnvEstimate estimateAmpEnv (const std::vector<float>& env, int holdSample)
+{
+    AmpEnvEstimate e;
+    if (env.size() < 8) return e;
+    const float hop = (float) kEnvHop / (float) kSR;
+    const int n = (int) env.size();
+    const int pk = (int) (std::max_element (env.begin(), env.end()) - env.begin());
+    const float peak = env[(size_t) pk];
+    auto lg = [] (float v, float lo, float hi) { return std::min (1.0f, std::max (0.0f, std::log (v / lo) / std::log (hi / lo))); };
+
+    int first = 0;
+    while (first < pk && env[(size_t) first] < peak - 25.0f) ++first;
+    const float att = std::max (0.0008f, (float) (pk - first) * hop + 0.002f);
+
+    const int hf = std::min (n - 1, std::max (pk + 1, holdSample / kEnvHop));
+    const float atHold = env[(size_t) std::max (pk, hf - 2)];
+    const float rel = std::pow (10.0f, (atHold - peak) / 20.0f);   // linear level at note-off relative to the peak
+    float sus = 0.0f, dec = 0.3f;
+    if (rel > 0.3f)
+    {
+        sus = rel;                                   // sustained sound
+        int i = pk;
+        while (i < hf && env[(size_t) i] > peak + 20.0f * std::log10 (std::max (sus * 1.15f, 1.0e-3f))) ++i;
+        dec = std::max (0.02f, (float) (i - pk) * hop * 2.0f);
+
+        // the level keeps sinking while the note is held (almost every real sound does): measure the slope over the later part
+        const int ia = pk + (int) (0.4f * (float) (hf - pk));
+        if (hf - 2 - ia >= 5)
+        {
+            const float slope = (env[(size_t) ia] - atHold) / ((float) (hf - 2 - ia) * hop);   // dB per second
+            if (slope > 4.0f)
+            {
+                e.fall = lg (20.0f / slope, 20.0f, 0.05f);                                     // time per -20 dB: 20 s .. 0.05 s -> 0 .. 1
+                const float fallAtA = std::pow (10.0f, -slope * (float) (ia - pk) * hop / 20.0f);
+                const float lvlA = std::pow (10.0f, (env[(size_t) ia] - peak) / 20.0f);
+                sus = std::min (1.0f, lvlA / std::max (fallAtA, 1.0e-3f));
+            }
+        }
+    }
+    else
+    {
+        // decaying sound: time to fall 20 dB, doubled = time constant to -40 dB (what AMP_D means)
+        int i = pk;
+        while (i < n - 1 && env[(size_t) i] > peak - 20.0f) ++i;
+        if (env[(size_t) i] > peak - 20.0f)          // never fell that far: extrapolate the slope
+        {
+            const float slope = (peak - env[(size_t) (n - 1)]) / std::max (1.0f, (float) (n - 1 - pk) * hop);
+            dec = slope > 0.5f ? 40.0f / slope : 8.0f;
+        }
+        else dec = std::max (0.02f, (float) (i - pk) * hop * 2.0f);
+    }
+
+    float relT = 0.2f;
+    {
+        int i = hf;
+        const float lvl = env[(size_t) hf];
+        while (i < n - 1 && env[(size_t) i] > lvl - 20.0f) ++i;
+        if (env[(size_t) i] <= lvl - 20.0f) relT = std::max (0.02f, (float) (i - hf) * hop * 2.0f);
+    }
+    e.a = lg (att, 0.0008f, 5.0f);
+    e.d = lg (std::min (dec, 8.0f), 0.005f, 8.0f);
+    e.s = std::min (1.0f, sus);
+    e.r = lg (std::min (relT, 8.0f), 0.005f, 8.0f);
+    e.valid = true;
+    return e;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Strongest steady partials of the target (Hz, relative amplitude)
+struct Partial { float hz = 0, amp = 0; };
+
+std::vector<Partial> findPartials (const std::vector<float>& x, const Spec& s8192)
+{
+    const Plan& plan = planFor (2);
+    const int N = kFftSize[2], n = (int) x.size();
+    std::vector<float> re ((size_t) N), im ((size_t) N);
+    std::vector<double> pw ((size_t) N / 2 + 1, 0.0);
+    int used = 0;
+    for (int f = 0; f < s8192.frames && used < 4; ++f)
+    {
+        if (s8192.loud[(size_t) f] < s8192.peakLoud - 12.0f) continue;
+        const int st = f * kFftHop[2];
+        for (int i = 0; i < N; ++i) { re[(size_t) i] = st + i < n ? x[(size_t) (st + i)] * plan.win[(size_t) i] : 0.0f; im[(size_t) i] = 0.0f; }
+        plan.fft (re.data(), im.data());
+        for (int k = 0; k <= N / 2; ++k) pw[(size_t) k] += (double) re[(size_t) k] * re[(size_t) k] + (double) im[(size_t) k] * im[(size_t) k];
+        ++used;
+    }
+    std::vector<Partial> out;
+    if (used == 0) return out;
+    const double binHz = kSR / N;
+    double mx = 0;
+    const int kLo = (int) (30.0 / binHz), kHi = (int) (9000.0 / binHz);
+    for (int k = kLo; k <= kHi; ++k) mx = std::max (mx, pw[(size_t) k]);
+    std::vector<std::pair<double, int>> peaks;
+    for (int k = kLo + 2; k < kHi - 1; ++k)
+        if (pw[(size_t) k] > pw[(size_t) k - 1] && pw[(size_t) k] >= pw[(size_t) k + 1] && pw[(size_t) k] > mx * 1.0e-3)
+            peaks.push_back ({ pw[(size_t) k], k });
+    std::sort (peaks.begin(), peaks.end(), [] (const auto& a, const auto& b) { return a.first > b.first; });
+    for (const auto& p : peaks)
+    {
+        const int k = p.second;
+        bool close = false;
+        for (const auto& o : out) if (std::abs (o.hz - (float) (k * binHz)) < 25.0f) { close = true; break; }
+        if (close) continue;
+        const double a = std::log (pw[(size_t) k - 1] + 1e-30), b = std::log (pw[(size_t) k] + 1e-30), c = std::log (pw[(size_t) k + 1] + 1e-30);
+        const double den = a - 2 * b + c, off = std::abs (den) > 1e-12 ? 0.5 * (a - c) / den : 0.0;
+        out.push_back ({ (float) ((k + std::max (-0.5, std::min (0.5, off))) * binHz), (float) std::sqrt (p.first / mx) });
+        if (out.size() >= 8) break;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Burst pattern at the start of the sound (hand claps: 3-5 noise slaps 8-20 ms apart, then the tail)
+struct BurstEstimate { bool valid = false; int count = 1; float spacingSec = 0.01f; };
+
+BurstEstimate estimateBursts (const std::vector<float>& x)
+{
+    BurstEstimate b;
+    const int hop = 44, win = 88;                    // 1 ms hop, 2 ms window
+    const int n = std::min ((int) x.size(), (int) (0.12 * kSR));
+    std::vector<float> e;
+    for (int s0 = 0; s0 + win <= n; s0 += hop)
+    {
+        double en = 0;
+        for (int j = 0; j < win; ++j) en += (double) x[(size_t) (s0 + j)] * x[(size_t) (s0 + j)];
+        e.push_back (10.0f * std::log10 ((float) (en / win) + 1.0e-10f));
+    }
+    if (e.size() < 20) return b;
+    const float peakDb = *std::max_element (e.begin(), e.end());
+    // peaks: local maxima that stand 4 dB above the deepest dip between them and the previous peak
+    std::vector<int> peaks;
+    int lastPeak = -1;
+    float dip = 1.0e9f;
+    for (size_t i = 1; i + 1 < e.size(); ++i)
+    {
+        if (lastPeak >= 0) dip = std::min (dip, e[i]);
+        if (e[i] > e[i - 1] && e[i] >= e[i + 1] && e[i] > peakDb - 25.0f)
+        {
+            if (lastPeak < 0) { peaks.push_back ((int) i); lastPeak = (int) i; dip = 1.0e9f; }
+            else if (e[i] - dip >= 4.0f && (int) i - lastPeak >= 3) { peaks.push_back ((int) i); lastPeak = (int) i; dip = 1.0e9f; }
+        }
+    }
+    if (peaks.size() < 2) return b;
+    std::vector<float> gaps;
+    for (size_t i = 1; i < peaks.size(); ++i) gaps.push_back ((float) (peaks[i] - peaks[i - 1]) * 0.001f);
+    std::sort (gaps.begin(), gaps.end());
+    const float med = gaps[gaps.size() / 2];
+    if (med < 0.004f || med > 0.04f) return b;
+    int regular = 1;
+    for (size_t i = 1; i < peaks.size(); ++i)
+        if (std::abs ((float) (peaks[i] - peaks[i - 1]) * 0.001f - med) < 0.4f * med) ++regular;
+    if (regular < 2) return b;
+    b.valid = true;
+    b.count = std::min (6, std::max (2, regular));
+    b.spacingSec = med;
+    return b;
+}
+
+struct LossBreakdown { float spec[3] = {}, env = 0, flux = 0, cent = 0, low = 0, harm = 0, prior = 0, total = 0; };
+
 class Evaluator
 {
 public:
@@ -435,10 +818,14 @@ public:
         for (int b = 0; b < kBands; ++b)
         {
             const float t = std::min (1.0f, std::max (0.0f, std::log2 (fc[(size_t) b] / 1000.0f) / 2.6f));
-            asym[(size_t) b] = 1.0f + 0.6f * t;    // candidate brighter than target is penalised harder
+            asym[(size_t) b] = 1.0f + tuning().asym * t;    // candidate brighter than target is penalised harder
             logFc[(size_t) b] = std::log2 (fc[(size_t) b]);
             isLow[(size_t) b] = fc[(size_t) b] < 160.0f;
         }
+        mod = estimateModulation (tf, tgt, lag);
+        ampEnv = estimateAmpEnv (tf.env, hold);
+        partials = findPartials (tgt, tf.spec[2]);
+
         // harmonicity of the target at the measured period
         const int W = lag > 1400.0f ? 4096 : 2048;
         harmW = W;
@@ -452,10 +839,21 @@ public:
             harmDb[(size_t) k] = 10.0f * std::log10 ((float) (en / W) + 1.0e-12f);
         }
         harmPeak = *std::max_element (harmDb.begin(), harmDb.end());
+
+        // clap bursts only make sense for noise-like material (a low periodic tone also has "peaks" every few ms)
+        {
+            double ws = 0, hs = 0;
+            for (int k = 0; k < 6; ++k)
+            {
+                const float w = std::max (0.0f, std::min (1.0f, (harmDb[(size_t) k] - (harmPeak - 40.0f)) / 40.0f));
+                ws += w; hs += w * harmT[(size_t) k];
+            }
+            if (ws <= 0 || hs / ws < 0.45) bursts = estimateBursts (tgt);
+        }
     }
 
     // Lower is better. Level is normalised away so the optimiser concentrates on timbre.
-    float loss (const Patch& pIn, float* gainOut = nullptr) const
+    float loss (const Patch& pIn, float* gainOut = nullptr, LossBreakdown* bd = nullptr) const
     {
         thread_local std::vector<float> cand;
         thread_local Feat cf;
@@ -521,9 +919,22 @@ public:
         const auto& pw = priorWeights();
         for (int i = 0; i < kNumParams; ++i) prior += pw[(size_t) i] * pIn.p[(size_t) i];
 
-        return 0.55f * lr[0] + 0.90f * lr[1] + 0.90f * lr[2]
-             + 0.50f * lenv + 0.20f * lflux + 0.35f * lcent + 0.30f * llow + 0.45f * lharm + prior;
+        const auto& T = tuning();
+        prior *= T.priorScale;
+        const float total = T.wSpec[0] * lr[0] + T.wSpec[1] * lr[1] + T.wSpec[2] * lr[2]
+                          + T.wEnv * lenv + T.wFlux * lflux + T.wCent * lcent + T.wLow * llow + T.wHarm * lharm + prior;
+        if (bd != nullptr)
+        {
+            for (int r = 0; r < kRes; ++r) bd->spec[r] = lr[r];
+            bd->env = lenv; bd->flux = lflux; bd->cent = lcent; bd->low = llow; bd->harm = lharm; bd->prior = prior; bd->total = total;
+        }
+        return total;
     }
+
+    ModEstimate mod;   // modulation found in the target (used to build seeds)
+    AmpEnvEstimate ampEnv;
+    BurstEstimate bursts;
+    std::vector<Partial> partials;
 
 private:
     // log-spectral distance of one resolution (+ optionally spectral flux)
@@ -548,7 +959,9 @@ private:
                 const float tv = std::max (tr[b], floorDb), cv = std::max (cr[b], floorDb);
                 const float d = cv - tv;
                 const float err = d > 0.0f ? asym[(size_t) b] * d : -d;
-                acc += (double) (wf * wb) * err; ws += (double) (wf * wb);
+                // energy that the target does not have is audible whatever the band's salience: full weight for clear excess
+                const float wEff = d > tuning().excessDb ? std::max (wb, tuning().excessW) : wb;
+                acc += (double) (wf * wEff) * err; ws += (double) (wf * wb);
             }
             if (fluxOut != nullptr && f > 0)
             {
@@ -610,6 +1023,16 @@ private:
         const auto peakIt = std::max_element (env.begin(), env.end());
         const int peakFrame = (int) std::distance (env.begin(), peakIt);
         const float peakDb = *peakIt;
+
+        // abrupt end (gate closes): the last audible frame is followed by a sudden fall of 20 dB or more
+        {
+            int lastAudible = -1;
+            for (int i = (int) env.size() - 1; i > peakFrame; --i)
+                if (env[(size_t) i] > peakDb - 55.0f) { lastAudible = i; break; }
+            if (lastAudible > peakFrame + 3 && lastAudible + 3 < (int) env.size()
+                && env[(size_t) lastAudible + 2] < env[(size_t) lastAudible] - 20.0f)
+                return std::min (std::max (lastAudible * kEnvHop, (int) (numSamples * 0.15f)), (int) (numSamples * 0.95f));
+        }
         const int first = std::max (peakFrame + 4, 4);
         const int last = (int) env.size() - 4;
 
@@ -652,6 +1075,44 @@ float distance (const Patch& a, const Patch& b)
 
 
 //==============================================================================
+// resample, trim, cap the length and normalise; empty when the input is unusable
+std::vector<float> prepareTarget (std::vector<float> input, double inputSr, const AnalysisOptions& opt)
+{
+    const size_t maxIn = (size_t) (inputSr * 12.0);
+    if (input.size() > maxIn) input.resize (maxIn);
+    auto sig = resample (input, inputSr, kSR);
+    input.clear();
+    float peak = 0;
+    for (float v : sig) peak = std::max (peak, std::abs (v));
+    if (sig.size() < 256 || peak < 1.0e-5f) return {};
+
+    size_t start = 0;
+    if (opt.trimSilence)
+    {
+        while (start < sig.size() && std::abs (sig[start]) < 0.02f * peak) ++start;
+        start = start > 128 ? start - 128 : 0;
+    }
+    const size_t maxLen = (size_t) (kSR * std::min (4.0f, std::max (0.2f, opt.maxSeconds)));
+    const size_t len = std::min (sig.size() - start, maxLen);
+    std::vector<float> tgt (sig.begin() + (long) start, sig.begin() + (long) (start + len));
+    if ((int) tgt.size() < kMinLen) tgt.resize ((size_t) kMinLen, 0.0f);
+
+    float pk = 0;
+    for (float v : tgt) pk = std::max (pk, std::abs (v));
+    for (auto& v : tgt) v *= 0.9f / std::max (pk, 1.0e-6f);
+
+    // drop a dead tail (digital silence / noise floor below -60 dB): it only costs time and dilutes the loss
+    {
+        size_t last = tgt.size();
+        while (last > 1 && std::abs (tgt[last - 1]) < 0.9f * 1.0e-3f) --last;
+        const size_t keep = std::min (tgt.size(), std::max ((size_t) kMinLen, last + 2205));
+        tgt.resize (keep);
+    }
+    const int fade = std::min (441, (int) tgt.size());
+    for (int i = 0; i < fade; ++i) tgt[tgt.size() - 1 - (size_t) i] *= (float) i / (float) fade;
+    return tgt;
+}
+
 void parallelFor (int n, int maxThreads, const std::function<void (int)>& fn)
 {
     const int nt = std::max (1, std::min (std::min (maxThreads, std::max ((int) std::thread::hardware_concurrency(), 1)), n));
@@ -694,10 +1155,12 @@ float matchFromLoss (float loss)
 } // namespace
 
 //==============================================================================
-AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
-                            const std::function<bool()>& shouldExit,
-                            const std::function<void (float)>& progress,
-                            const AnalysisOptions& opt)
+namespace
+{
+AnalysisResult runAnalysisImpl (std::vector<float> input, double inputSr,
+                                const std::function<bool()>& shouldExit,
+                                const std::function<void (float)>& progress,
+                                const AnalysisOptions& opt, std::vector<float>* finalistsOut)
 {
     AnalysisResult result;
     auto exitNow = [&] { return shouldExit && shouldExit(); };
@@ -705,33 +1168,8 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
     const int maxThreads = std::max (1, opt.maxThreads);
 
     // ---- 1. prepare the target ------------------------------------------------
-    const size_t maxIn = (size_t) (inputSr * 12.0);
-    if (input.size() > maxIn) input.resize (maxIn);
-    auto sig = resample (input, inputSr, kSR);
-    input.clear();
-    float peak = 0;
-    for (float v : sig) peak = std::max (peak, std::abs (v));
-    if (sig.size() < 2048 || peak < 1.0e-5f) return result;
-
-    size_t start = 0;
-    if (opt.trimSilence)
-    {
-        while (start < sig.size() && std::abs (sig[start]) < 0.02f * peak) ++start;
-        start = start > 128 ? start - 128 : 0;
-    }
-    const size_t maxLen = (size_t) (kSR * std::min (4.0f, std::max (0.2f, opt.maxSeconds)));
-    const size_t len = std::min (sig.size() - start, maxLen);
-    std::vector<float> tgt (sig.begin() + (long) start, sig.begin() + (long) (start + len));
-    if ((int) tgt.size() < kMinLen) tgt.resize ((size_t) kMinLen, 0.0f);
-    sig.clear();
-
-    {
-        float pk = 0;
-        for (float v : tgt) pk = std::max (pk, std::abs (v));
-        for (auto& v : tgt) v *= 0.9f / std::max (pk, 1.0e-6f);
-        const int fade = std::min (441, (int) tgt.size());
-        for (int i = 0; i < fade; ++i) tgt[tgt.size() - 1 - (size_t) i] *= (float) i / (float) fade;
-    }
+    std::vector<float> tgt = prepareTarget (std::move (input), inputSr, opt);
+    if (tgt.empty()) return result;
 
     // ---- 2. pitch ---------------------------------------------------------------
     std::vector<float> cands;
@@ -753,8 +1191,36 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
             for (float e : sorted) addCand (e);
             addCand (med * 1.5f); addCand (med / 1.5f); addCand (med * 4.0f); addCand (med * 0.25f);
         }
+        // strongest steady partials (and their sub-octaves) are good root candidates for noisy / inharmonic sounds
+        {
+            Spec s3;
+            computeSpec (tgt, 2, s3);
+            const auto pr = findPartials (tgt, s3);
+            int taken = 0;
+            for (const auto& q : pr)
+            {
+                if (q.hz < 40.0f || q.hz > 2500.0f || taken >= 3) continue;
+                addCand (q.hz);
+                if (taken < 2) addCand (q.hz * 0.5f);
+                ++taken;
+            }
+        }
         if (cands.empty()) { addCand (110.0f); addCand (220.0f); addCand (440.0f); addCand (55.0f); }
-        if (cands.size() > 12) cands.resize (12);
+        if (cands.size() > 16) cands.resize (16);
+        // YIN picks the shortest clearly repeating period, so a consistent estimate is rarely too high - but sub-octaves of it
+        // (which the candidate list also contains) are a common mistake: they make the patch grow a fundamental the sample lacks
+        {
+            std::vector<float> e = detectPitchCandidates (tgt, kSR);
+            std::sort (e.begin(), e.end());
+            if (e.size() >= 3 && (e.back() - e.front()) < 0.06f * e[e.size() / 2])
+            {
+                const float med = e[e.size() / 2];
+                std::vector<float> keep;
+                for (float c : cands) if (c >= 0.7f * med) keep.push_back (c);
+                if (! keep.empty()) cands = keep;
+            }
+        }
+        if (opt.forcePitchHz > 0.0f) cands.assign (1, opt.forcePitchHz);
     }
 
     auto rootOf = [] (float f) { return (int) std::lround (69.0 + 12.0 * std::log2 ((double) f / 440.0)); };
@@ -772,8 +1238,10 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
 
     std::unique_ptr<Evaluator> evPtr;
     float freq = cands[0];
+    int rootNote = rootOf (freq);
+    float tune0 = tuneOf (freq, rootNote);
+    std::vector<std::pair<float, float>> votes;      // (vote score, frequency)
     {
-        float bestVote = 1.0e9f;
         for (float f : cands)
         {
             if (exitNow()) return result;
@@ -788,14 +1256,25 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
             });
             std::sort (l.begin(), l.end());
             // small bias towards the primary estimate so that equal scores do not flip octaves
-            const float vote = 0.5f * (l[0] + l[1]) + (f == cands[0] ? 0.0f : 0.02f);
-            if (vote < bestVote) { bestVote = vote; freq = f; evPtr = std::move (e); }
+            votes.push_back ({ 0.5f * (l[0] + l[1]) + (f == cands[0] ? 0.0f : 0.02f), f });
             report (0.04f * (float) (&f - &cands[0] + 1) / (float) cands.size());
         }
+        std::sort (votes.begin(), votes.end());
     }
-    Evaluator& ev = *evPtr;
-    const int rootNote = rootOf (freq);
-    const float tune0 = tuneOf (freq, rootNote);
+    if (finalistsOut != nullptr)
+    {
+        finalistsOut->push_back (votes[0].second);
+        if (votes.size() > 1 && votes[1].first - votes[0].first < 0.30f) finalistsOut->push_back (votes[1].second);
+        return result;
+    }
+    auto setPitch = [&] (float f)
+    {
+        freq = f;
+        rootNote = rootOf (f);
+        tune0 = tuneOf (f, rootNote);
+        evPtr = std::make_unique<Evaluator> (tgt, noteFreq (rootNote), (double) f);
+    };
+    setPitch (votes[0].second);
 
     // ---- 3. search --------------------------------------------------------------
     std::mt19937 rng (opt.seed);
@@ -805,9 +1284,14 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
     const float lenSec = (float) tgt.size() / (float) kSR;
     const float eff = std::max (0.05f, opt.effort) * std::min (1.0f, std::max (0.5f, std::sqrt (1.1f / std::max (lenSec, 0.1f))));
 
+   #ifdef KRAKEN_TUNING_ENV
+    auto trace = [] (const char* what, float loss) { std::fprintf (stderr, "  [%s] best loss %.4f\n", what, loss); };
+   #else
+    auto trace = [] (const char*, float) {};
+   #endif
     auto evalMany = [&] (std::vector<Cand>& c)
     {
-        parallelFor ((int) c.size(), maxThreads, [&] (int i) { c[(size_t) i].loss = ev.loss (c[(size_t) i].p); });
+        parallelFor ((int) c.size(), maxThreads, [&] (int i) { c[(size_t) i].loss = evPtr->loss (c[(size_t) i].p); });
     };
     auto byLoss = [] (const Cand& a, const Cand& b) { return a.loss < b.loss; };
     auto clampv = [] (float v) { return std::min (1.0f, std::max (0.0f, v)); };
@@ -826,44 +1310,166 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
     };
 
     constexpr int mu = 10;
-    const int nIslands = 3;
-    const int islandGens = std::max (4, (int) (30 * eff)), islandLambda = 36;
+    // successive halving: many short searches from different starting points, then only the best continue
+    const bool sh = tuning().halving;
+    const int nStage1 = sh ? 8 : 3, nStage2 = sh ? 3 : 0;
+    const int gens1 = sh ? std::max (3, (int) (8 * eff)) : std::max (4, (int) (30 * eff)), lambda1 = sh ? 28 : 36;
+    const int gens2 = std::max (4, (int) (14 * eff)), lambda2 = 36;
     const int finalGens = std::max (6, (int) (70 * eff)), finalLambda = 48;
     constexpr int polishRounds = 4;
-    const float totalSteps = (float) (3 + nIslands * islandGens + finalGens + polishRounds + 2);
+    const float totalSteps = (float) (15 + nStage1 * gens1 + nStage2 * gens2 + finalGens + polishRounds + 2);
     float stepsDone = 0.0f;
     auto step = [&] { stepsDone += 1.0f; report (0.05f + 0.93f * stepsDone / totalSteps); };
 
-    // 3a. screen every seed, plus one wild variant of each
     std::vector<Cand> pop;
+    auto screenSeeds = [&]() -> bool
+    {
+    // 3a. screen every seed, plus one wild variant of each
+    pop.clear();
     for (const auto& a : seeds) { Cand c; c.p = a; c.p.tune = tune0; pop.push_back (c); }
     const size_t nSeeds = pop.size();
     for (size_t i = 0; i < nSeeds; ++i) { Cand c; c.p = mutated (pop[i].p, 0.28f, 0.35f); c.p.tune = tune0; pop.push_back (c); }
     evalMany (pop);
-    if (exitNow()) return result;
+    if (exitNow()) return false;
     std::sort (pop.begin(), pop.end(), byLoss);
-    step();
+    trace ("seeds", pop[0].loss);
 
-    // 3b. spawn around the best distinct seeds
+    // 3a''. envelope-matched copies of the best seeds, and oscillator-per-partial seeds (cowbells, bells, clean tones ...)
+    if (tuning().extraSeeds)
     {
-        std::vector<size_t> elites;
-        for (size_t i = 0; i < pop.size() && elites.size() < 8; ++i)
+        std::vector<size_t> top;
+        for (size_t i = 0; i < pop.size() && top.size() < 12; ++i)
         {
             bool far = true;
-            for (size_t e : elites) if (distance (pop[i].p, pop[e].p) < 0.08f) { far = false; break; }
-            if (far) elites.push_back (i);
+            for (size_t t : top) if (distance (pop[i].p, pop[t].p) < 0.06f) { far = false; break; }
+            if (far) top.push_back (i);
         }
-        std::vector<Cand> spawn;
-        for (size_t e : elites)
-            for (int k = 0; k < 16; ++k) { Cand c; c.p = mutated (pop[e].p, 0.12f, 0.25f); c.p.tune = tune0; spawn.push_back (c); }
-        evalMany (spawn);
-        if (exitNow()) return result;
-        pop.insert (pop.end(), spawn.begin(), spawn.end());
-        std::sort (pop.begin(), pop.end(), byLoss);
-        step();
+        std::vector<Cand> vars;
+        const auto& ae = evPtr->ampEnv;
+        auto applyEnv = [&] (Patch& p)
+        {
+            p.p[P::AMP_A] = ae.a; p.p[P::AMP_D] = ae.d; p.p[P::AMP_S] = ae.s; p.p[P::AMP_R] = ae.r; p.p[P::AMP_HOLD] = 0.0f; p.p[P::AMP_FALL] = ae.fall;
+        };
+        if (ae.valid)
+            for (size_t t : top) { Cand c; c.p = pop[t].p; applyEnv (c.p); vars.push_back (c); }
+
+        const auto& pr = evPtr->partials;
+        const float f0Eff = (float) (440.0 * std::pow (2.0, (double) (rootNote - 69) / 12.0)) * std::exp2 (tune0 / 12.0f);
+        auto offsetOf = [&] (float hz) { return 12.0f * std::log2 (hz / f0Eff); };
+        std::vector<Partial> usable;
+        for (const auto& q : pr)
+            if (std::abs (offsetOf (q.hz)) <= 23.4f) usable.push_back (q);
+        if (usable.size() >= 1)
+        {
+            auto setOsc = [] (Patch& p, bool isB, float st, float level, float shape)
+            {
+                const float r = std::round (st);
+                const float coarse = 0.5f + r / 48.0f, fine = 0.5f + (st - r) / 2.0f;
+                if (! isB) { p.p[P::A_COARSE] = coarse; p.p[P::A_FINE] = fine; p.p[P::A_LEVEL] = level; p.p[P::A_SHAPE] = shape; p.p[P::A_UNI] = 0.0f; p.p[P::A_PW] = 0.5f; }
+                else       { p.p[P::B_COARSE] = coarse; p.p[P::B_FINE] = fine; p.p[P::B_LEVEL] = level; p.p[P::B_SHAPE] = shape; p.p[P::B_RING] = 0.0f; p.p[P::B_FB] = 0.0f; }
+            };
+            const size_t nu = std::min<size_t> (usable.size(), 4);
+            for (float shape : { 0.0f, 0.67f, 1.0f })
+                for (size_t i = 0; i < nu; ++i)
+                    for (size_t j = i; j < nu; ++j)
+                    {
+                        Patch p = defaultPatch();
+                        p.tune = tune0;
+                        p.p[P::F_CUTOFF] = 1.0f; p.p[P::F_RES] = 0.0f; p.p[P::F_ENVAMT] = 0.5f; p.p[P::F_KEYTRK] = 0.0f;
+                        p.p[P::SUB_LEVEL] = 0.0f; p.p[P::NOISE_LEVEL] = 0.0f; p.p[P::C_LEVEL] = 0.0f; p.p[P::A_FM] = 0.0f;
+                        p.p[P::COMB_MIX] = 0.0f; p.p[P::VOWEL_MIX] = 0.0f; p.p[P::DIST_AMT] = 0.0f; p.p[P::DIST_FOLD] = 0.0f;
+                        p.p[P::CHO_MIX] = 0.0f; p.p[P::DLY_MIX] = 0.0f; p.p[P::REV_MIX] = 0.0f; p.p[P::PITCH_AMT] = 0.5f;
+                        setOsc (p, false, offsetOf (usable[i].hz), 0.9f, shape);
+                        if (j == i) setOsc (p, true, 0.0f, 0.0f, shape);
+                        else        setOsc (p, true, offsetOf (usable[j].hz), 0.9f * usable[j].amp / std::max (usable[i].amp, 1.0e-3f), shape);
+                        if (ae.valid) applyEnv (p); else { p.p[P::AMP_S] = 0.6f; }
+                        Cand c; c.p = p; vars.push_back (c);
+                    }
+        }
+        // noise-based seeds: snares, hats, claps, cymbals (filtered noise, optionally with a tone at the strongest partial)
+        {
+            auto cutP = [] (float hz) { return std::min (1.0f, std::max (0.0f, std::log (hz / 25.0f) / std::log (720.0f))); };
+            struct F { float mode, hz; };
+            const F filters[] = { { 1.0f, 1200.0f }, { 1.0f, 2500.0f }, { 1.0f, 4500.0f }, { 1.0f, 7000.0f },
+                                  { 0.5f, 1500.0f }, { 0.5f, 3000.0f }, { 0.0f, 6000.0f } };
+            for (const auto& fl : filters)
+                for (float color : { 0.55f, 1.0f })
+                    for (int tone = 0; tone < 2; ++tone)
+                    {
+                        if (tone == 1 && usable.empty()) continue;
+                        Patch p = defaultPatch();
+                        p.tune = tune0;
+                        p.p[P::A_LEVEL] = 0.0f; p.p[P::B_LEVEL] = 0.0f; p.p[P::C_LEVEL] = 0.0f; p.p[P::SUB_LEVEL] = 0.0f; p.p[P::A_FM] = 0.0f;
+                        p.p[P::NOISE_LEVEL] = 0.85f; p.p[P::NOISE_COLOR] = color; p.p[P::NOISE_TONAL] = 0.0f; p.p[P::NOISE_TRANS] = 0.0f;
+                        p.p[P::F_MODE] = fl.mode; p.p[P::F_CUTOFF] = cutP (fl.hz); p.p[P::F_RES] = 0.2f; p.p[P::F_SLOPE] = 0.0f;
+                        p.p[P::F_ENVAMT] = 0.5f; p.p[P::F_KEYTRK] = 0.0f; p.p[P::COMB_MIX] = 0.0f; p.p[P::VOWEL_MIX] = 0.0f;
+                        p.p[P::DIST_AMT] = 0.0f; p.p[P::DIST_FOLD] = 0.0f; p.p[P::CHO_MIX] = 0.0f; p.p[P::DLY_MIX] = 0.0f; p.p[P::REV_MIX] = 0.0f;
+                        p.p[P::PITCH_AMT] = 0.5f;
+                        if (tone == 1)
+                        {
+                            const float st = offsetOf (usable[0].hz), r = std::round (st);
+                            p.p[P::A_SHAPE] = 0.33f; p.p[P::A_LEVEL] = 0.55f; p.p[P::A_COARSE] = 0.5f + r / 48.0f; p.p[P::A_FINE] = 0.5f + (st - r) / 2.0f;
+                        }
+                        if (ae.valid) applyEnv (p); else p.p[P::AMP_S] = 0.0f;
+                        Cand c; c.p = p; vars.push_back (c);
+                        if (evPtr->bursts.valid)      // the same noise seed with the detected clap burst pattern
+                        {
+                            Cand cb = c;
+                            cb.p.p[P::AMP_BURSTS] = ((float) evPtr->bursts.count - 1.0f + 0.5f) / 5.99f;
+                            cb.p.p[P::BURST_T] = clampv (std::log (evPtr->bursts.spacingSec / 0.004f) / std::log (10.0f));
+                            vars.push_back (cb);
+                        }
+                    }
+        }
+        if (! vars.empty())
+        {
+            evalMany (vars);
+            if (exitNow()) return false;
+            pop.insert (pop.end(), vars.begin(), vars.end());
+            std::sort (pop.begin(), pop.end(), byLoss);
+            trace ("envelope / partial seeds", pop[0].loss);
+        }
     }
-    const float poolMedian = pop[pop.size() / 2].loss;
-    (void) poolMedian;
+
+    // 3a'. modulation-aware variants: if the sample wobbles / has vibrato / tremolo, give the best seeds that LFO
+    {
+        const auto& m = evPtr->mod;
+        if (tuning().extraSeeds && (m.filt || m.vib || m.trem))
+        {
+            const float rateP = clampv (std::log (m.rate / 0.1f) / std::log (300.0f));
+            std::vector<size_t> top;
+            for (size_t i = 0; i < pop.size() && top.size() < 12; ++i)
+            {
+                bool far = true;
+                for (size_t t : top) if (distance (pop[i].p, pop[t].p) < 0.06f) { far = false; break; }
+                if (far) top.push_back (i);
+            }
+            std::vector<Cand> vars;
+            auto make = [&] (const Patch& base, float filt, float vib, float trem, float shape)
+            {
+                Cand c; c.p = base;
+                c.p.p[P::LFO_RATE] = rateP; c.p.p[P::LFO_SHAPE] = shape; c.p.p[P::LFO_FADE] = 0.12f;
+                c.p.p[P::LFO_FILT] = clampv (filt); c.p.p[P::LFO_VIB] = clampv (vib); c.p.p[P::LFO_TREM] = clampv (trem);
+                vars.push_back (c);
+            };
+            for (size_t t : top)
+            {
+                const Patch& b = pop[t].p;
+                if (m.filt) for (float mult : { 1.0f, 3.0f, 6.0f }) for (float shape : { 0.0f, 0.33f }) make (b, mult * m.filtOct / 3.0f, 0.0f, 0.0f, shape);
+                if (m.vib)  make (b, 0.0f, std::sqrt (m.vibSt / 4.0f), 0.0f, 0.0f);
+                if (m.trem) make (b, 0.0f, 0.0f, m.tremDepth, 0.0f);
+            }
+            evalMany (vars);
+            if (exitNow()) return false;
+            pop.insert (pop.end(), vars.begin(), vars.end());
+            std::sort (pop.begin(), pop.end(), byLoss);
+            trace ("modulation variants", pop[0].loss);
+        }
+    }
+    step();
+
+        return true;
+    };
 
     // log-rank recombination weights
     std::vector<float> w ((size_t) mu);
@@ -931,17 +1537,41 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
         return true;
     };
 
+    if (! screenSeeds()) return result;
+
+    // 3b. spawn around the best distinct seeds
+    {
+        std::vector<size_t> elites;
+        for (size_t i = 0; i < pop.size() && elites.size() < 8; ++i)
+        {
+            bool far = true;
+            for (size_t e : elites) if (distance (pop[i].p, pop[e].p) < 0.08f) { far = false; break; }
+            if (far) elites.push_back (i);
+        }
+        std::vector<Cand> spawn;
+        for (size_t e : elites)
+            for (int k = 0; k < 16; ++k) { Cand c; c.p = mutated (pop[e].p, 0.12f, 0.25f); c.p.tune = tune0; spawn.push_back (c); }
+        evalMany (spawn);
+        if (exitNow()) return result;
+        pop.insert (pop.end(), spawn.begin(), spawn.end());
+        std::sort (pop.begin(), pop.end(), byLoss);
+        trace ("spawn", pop[0].loss);
+        step();
+    }
+    const float poolMedian = pop[pop.size() / 2].loss;
+    (void) poolMedian;
+
     // 3c. islands: independent searches started from the best *different* seeds
     std::vector<Island> islands;
     {
         std::vector<size_t> elites;
-        for (size_t i = 0; i < pop.size() && (int) elites.size() < nIslands; ++i)
+        for (size_t i = 0; i < pop.size() && (int) elites.size() < nStage1; ++i)
         {
             bool far = true;
-            for (size_t e : elites) if (distance (pop[i].p, pop[e].p) < 0.14f) { far = false; break; }
+            for (size_t e : elites) if (distance (pop[i].p, pop[e].p) < 0.12f) { far = false; break; }
             if (far) elites.push_back (i);
         }
-        for (size_t i = 0; i < pop.size() && (int) elites.size() < nIslands; ++i)
+        for (size_t i = 0; i < pop.size() && (int) elites.size() < nStage1; ++i)
             if (std::find (elites.begin(), elites.end(), i) == elites.end()) elites.push_back (i);
 
         for (size_t e : elites)
@@ -953,21 +1583,30 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
             islands.push_back (std::move (isl));
         }
     }
+    auto byBest = [] (const Island& a, const Island& b) { return a.best.loss < b.best.loss; };
     for (auto& isl : islands)
-        if (! runES (isl, islandGens, islandLambda, 0.0f, 0.45f)) return result;
+        if (! runES (isl, gens1, lambda1, 0.0f, sh ? 0.2f : 0.45f)) return result;
+    std::sort (islands.begin(), islands.end(), byBest);
+    for (auto& isl : islands) trace ("stage 1 island", isl.best.loss);
 
-    // 3d. continue from the best island (its archive and mean carry over)
-    size_t bi = 0;
-    for (size_t i = 1; i < islands.size(); ++i) if (islands[i].best.loss < islands[bi].best.loss) bi = i;
-    Island fin = std::move (islands[bi]);
-    for (size_t i = 0; i < islands.size(); ++i)
-        if (i != bi) for (auto& c : islands[i].archive) fin.archive.push_back (c);
+    // stage 2: the best few get more time
+    const size_t keep = std::min<size_t> ((size_t) nStage2, islands.size());
+    for (size_t i = 0; i < keep; ++i)
+        if (! runES (islands[i], gens2, lambda2, 0.2f, 0.45f)) return result;
+    std::sort (islands.begin(), islands.begin() + (long) keep, byBest);
+    for (size_t i = 0; i < keep; ++i) trace ("stage 2 island", islands[i].best.loss);
+
+    // 3d. continue from the winner (its archive and mean carry over, the others contribute their archives)
+    Island fin = std::move (islands[0]);
+    for (size_t i = 1; i < islands.size(); ++i)
+        for (auto& c : islands[i].archive) fin.archive.push_back (c);
     for (int d = 0; d < kNumParams; ++d)
     {
         fin.mean[(size_t) d] = fin.best.p.p[(size_t) d];
         fin.sigma[(size_t) d] = std::max (0.05f, fin.sigma[(size_t) d]);
     }
     if (! runES (fin, finalGens, finalLambda, 0.45f, 1.0f)) return result;
+    trace ("final ES", fin.best.loss);
 
     // 3e. tune line search + coordinate polish
     Patch cur = fin.best.p;
@@ -985,6 +1624,7 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
         }
     };
     tuneSearch();
+    trace ("tune", curLoss);
     static const float polishStep[polishRounds] = { 0.06f, 0.035f, 0.02f, 0.010f };
     for (int round = 0; round < polishRounds; ++round)
     {
@@ -1016,20 +1656,22 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
         }
         if (any)
         {
-            const float cl = ev.loss (comb);
+            const float cl = evPtr->loss (comb);
             if (cl < curLoss) { cur = comb; curLoss = cl; }
             else if (bestSingle.loss < curLoss) { cur = bestSingle.p; curLoss = bestSingle.loss; }
         }
+        trace ("polish", curLoss);
         step();
     }
     tuneSearch();
+    trace ("tune2", curLoss);
     step();
 
     // ---- 4. build result -------------------------------------------------------------
     auto setLevel = [&] (Patch& p)
     {
         float g = 1.0f;
-        ev.loss (p, &g);
+        evPtr->loss (p, &g);
         p.level = std::sqrt (std::min (std::max (g / 4.0f, 0.02f), 1.0f));
     };
 
@@ -1061,6 +1703,39 @@ AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
     result.ok = true;
     report (1.0f);
     return result;
+}
+
+} // namespace
+
+// Two pitch hypotheses are common (a cowbell is 187 Hz or 560 Hz, a snare 74 or 148 Hz ...) and the cheap scores cannot
+// tell them apart reliably, so when the vote is close the best two each get a full search and the lower final loss wins.
+AnalysisResult runAnalysis (std::vector<float> input, double inputSr,
+                            const std::function<bool()>& shouldExit,
+                            const std::function<void (float)>& progress,
+                            const AnalysisOptions& opt)
+{
+    auto exitNow = [&] { return shouldExit && shouldExit(); };
+    auto report = [&] (float v) { if (progress) progress (std::min (0.99f, std::max (0.0f, v))); };
+    if (opt.forcePitchHz > 0.0f) return runAnalysisImpl (std::move (input), inputSr, shouldExit, progress, opt, nullptr);
+
+    std::vector<float> finalists;
+    auto pre = runAnalysisImpl (input, inputSr, shouldExit, [&] (float p) { report (0.08f * p); }, opt, &finalists);
+    if (finalists.empty()) return pre;
+
+    AnalysisResult best;
+    bool have = false;
+    for (size_t i = 0; i < finalists.size(); ++i)
+    {
+        if (exitNow()) return {};
+        AnalysisOptions o = opt;
+        o.forcePitchHz = finalists[i];
+        if (finalists.size() > 1) o.effort = opt.effort * 0.7f;
+        const float n = (float) finalists.size();
+        auto r = runAnalysisImpl (input, inputSr, shouldExit, [&, i, n] (float p) { report (0.08f + 0.92f * ((float) i + p) / n); }, o, nullptr);
+        if (r.ok && (! have || r.loss < best.loss)) { best = std::move (r); have = true; }
+    }
+    report (1.0f);
+    return best;
 }
 
 } // namespace kraken

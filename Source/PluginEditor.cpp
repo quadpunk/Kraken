@@ -214,15 +214,96 @@ void KrakenView::updateAnimation()
 
 void KrakenView::shipPose (float& x, float& y, float& sc, float& ang, float& alpha) const
 {
+    // 0 .. 0.22: the arms reach the ship at the surface and coil around it; 0.22 .. 1: it is dragged down, past the kraken's
+    // side, into the dark water above the inspector, tilting and shrinking as it goes
     const float e = juce::jlimit (0.0f, 1.0f, shipD);
-    const float ease = e * e * (3.0f - 2.0f * e);
-    const float startY = arena.getY() - 6.0f * scaleU;
-    const float endY = headC.y + headRy * 0.65f;
-    x = headC.x + std::sin (time * 1.3f) * 6.0f * (1.0f - e);
-    y = startY + (endY - startY) * ease;
-    sc = scaleU * 0.8f * (1.0f - 0.7f * ease);
-    ang = 0.12f * std::sin (time * 2.1f) * (1.0f - e) + 0.9f * ease;
-    alpha = e < 0.7f ? 1.0f : juce::jlimit (0.0f, 1.0f, 1.0f - (e - 0.7f) / 0.3f);
+    auto smooth = [] (float a, float b, float v) { const float t = juce::jlimit (0.0f, 1.0f, (v - a) / (b - a)); return t * t * (3.0f - 2.0f * t); };
+    const float pull = smooth (0.22f, 1.0f, e);
+    const float sideP = smooth (0.30f, 0.62f, e);
+    const float startY = arena.getY() + 4.0f * scaleU;
+    const float deepY = inspector.getY() - 26.0f * scaleU;
+    x = headC.x + std::sin (time * 1.3f) * 5.0f * (1.0f - pull) - headRx * 1.62f * sideP + std::sin (time * 3.1f) * 3.0f * pull;
+    y = startY + (deepY - startY) * (pull * pull * (1.4f - 0.4f * pull));
+    sc = scaleU * 0.8f * (1.0f - 0.5f * pull);
+    ang = 0.12f * std::sin (time * 2.1f) * (1.0f - pull) - 1.15f * pull + 0.08f * std::sin (time * 4.0f) * pull;
+    alpha = e < 0.78f ? 1.0f : juce::jlimit (0.0f, 1.0f, 1.0f - (e - 0.78f) / 0.22f);
+}
+
+void KrakenView::drawShipTentacles (juce::Graphics& g)
+{
+    if (! shipActive) return;
+    float sx, sy, ssc, sang, sal;
+    shipPose (sx, sy, ssc, sang, sal);
+    if (sal < 0.02f) return;
+
+    const float e = juce::jlimit (0.0f, 1.0f, shipD);
+    const float reach = juce::jlimit (0.0f, 1.0f, e / 0.22f);
+    const float grab = reach * reach * (3.0f - 2.0f * reach) * sal;      // arms retract again while the ship fades away
+    const auto xf = juce::AffineTransform::scale (ssc).rotated (sang).translated (sx, sy);
+    const auto bx = breathXf();
+
+    struct Grip { float side, headY, hx, hy; };      // head anchor (relative to head) and contact point on the hull (ship space)
+    static const Grip grips[] = { { -1.0f, -0.18f, -52.0f,  4.0f }, { -1.0f, 0.28f, -40.0f, 20.0f },
+                                  {  1.0f, -0.18f,  52.0f,  4.0f }, {  1.0f, 0.28f,  40.0f, 20.0f } };
+    int k = 0;
+    for (const auto& gr : grips)
+    {
+        const juce::Point<float> p0 = juce::Point<float> (headC.x + gr.side * headRx * 0.86f, headC.y + gr.headY * headRy).transformedBy (bx);
+        const juce::Point<float> contact = juce::Point<float> (gr.hx, gr.hy).transformedBy (xf);
+        // the tip trails a little behind the contact point while the arm is still reaching, and strains when the ship is pulled
+        const float strain = 3.0f * std::sin (time * 5.0f + (float) k) * e;
+        const auto p3 = p0 + (contact - p0) * grab + juce::Point<float> (strain, -strain * 0.5f);
+        if (grab > 0.02f)
+            drawTentacle (g, p0, p3, gr.side, gr.side * 2.0f + (float) k, 0.85f, false);
+        ++k;
+    }
+}
+
+void KrakenView::drawShipWraps (juce::Graphics& g, float grab)
+{
+    // three coils across the hull, growing from the sides as the arms close around it
+    const auto white = juce::Colours::white;
+    for (int b = 0; b < 3; ++b)
+    {
+        const float f = juce::jlimit (0.0f, 1.0f, (grab - 0.15f * (float) b) / 0.55f);
+        if (f <= 0.01f) continue;
+        const float yk = 2.0f + (float) b * 8.0f;
+        const juce::Point<float> a (-58.0f, yk), c (0.0f, yk + 12.0f), d (58.0f, yk);
+        juce::Path band;
+        const int N = 28;
+        for (int i = 0; i <= N; ++i)
+        {
+            const float t = 0.5f * f * (float) i / (float) N;           // from both sides towards the middle
+            const float u = 1.0f - t;
+            const auto pl = a * (u * u) + c * (2.0f * u * t) + d * (t * t);
+            if (i == 0) band.startNewSubPath (pl); else band.lineTo (pl);
+        }
+        juce::Path bandR;
+        for (int i = 0; i <= N; ++i)
+        {
+            const float t = 1.0f - 0.5f * f * (float) i / (float) N;
+            const float u = 1.0f - t;
+            const auto pr = a * (u * u) + c * (2.0f * u * t) + d * (t * t);
+            if (i == 0) bandR.startNewSubPath (pr); else bandR.lineTo (pr);
+        }
+        for (const auto* p : { &band, &bandR })
+        {
+            g.setColour (white);
+            g.strokePath (*p, juce::PathStrokeType (9.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (juce::Colours::black);
+            g.strokePath (*p, juce::PathStrokeType (6.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+        // suckers
+        g.setColour (white);
+        for (int i = 1; i < 7; ++i)
+        {
+            const float t = (float) i / 7.0f;
+            if (t > 0.5f * f && t < 1.0f - 0.5f * f) continue;
+            const float u = 1.0f - t;
+            const auto q = a * (u * u) + c * (2.0f * u * t) + d * (t * t);
+            g.fillEllipse (q.x - 1.4f, q.y - 1.4f, 2.8f, 2.8f);
+        }
+    }
 }
 
 void KrakenView::drawShip (juce::Graphics& g)
@@ -235,6 +316,29 @@ void KrakenView::drawShip (juce::Graphics& g)
     const auto white = juce::Colours::white;
     const auto black = juce::Colours::black;
     const bool layer = alpha < 0.999f;
+
+    // the deeper it goes the darker and murkier the water around it; a trail of bubbles rises from the hull
+    {
+        const float e = juce::jlimit (0.0f, 1.0f, shipD);
+        const float depth = juce::jlimit (0.0f, 1.0f, (e - 0.25f) / 0.6f);
+        if (depth > 0.0f)
+        {
+            const float R = 120.0f * sc / scaleU * scaleU;
+            g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.85f * depth * alpha), x, y,
+                                                     juce::Colours::black.withAlpha (0.0f), x + R, y, true));
+            g.fillEllipse (x - R, y - R, R * 2.0f, R * 2.0f);
+            for (int i = 0; i < 7; ++i)
+            {
+                const float ph = std::fmod (time * (0.45f + 0.07f * (float) i) + (float) i * 0.37f, 1.0f);
+                const float bx = x + std::sin ((float) i * 2.3f + time * 2.0f) * 20.0f * sc / scaleU * scaleU;
+                const float by = y - 10.0f * sc / scaleU * scaleU - ph * 90.0f * scaleU;
+                const float br = (1.5f + 3.0f * (float) (i % 3)) * scaleU * (1.0f - ph * 0.5f);
+                g.setColour (juce::Colours::white.withAlpha (0.55f * (1.0f - ph) * depth * alpha));
+                g.drawEllipse (bx - br, by - br, br * 2.0f, br * 2.0f, 1.0f);
+            }
+        }
+    }
+
     if (layer) g.beginTransparencyLayer (alpha);
     {
         juce::Graphics::ScopedSaveState state (g);
@@ -278,6 +382,11 @@ void KrakenView::drawShip (juce::Graphics& g)
         g.setColour (white); g.strokePath (hull, juce::PathStrokeType (2.2f));
         g.setFont (monoFont (12.0f, true));
         g.drawText ("SAMPLE", juce::Rectangle<float> (-44.0f, 3.0f, 88.0f, 20.0f), juce::Justification::centred, false);
+
+        {   // the coils
+            const float reach = juce::jlimit (0.0f, 1.0f, juce::jlimit (0.0f, 1.0f, shipD) / 0.22f);
+            drawShipWraps (g, reach * reach * (3.0f - 2.0f * reach));
+        }
     }
     if (layer) g.endTransparencyLayer();
 }
@@ -361,9 +470,10 @@ void KrakenView::resized()
 void KrakenView::layoutInspector()
 {
     const int n = kArmCount[selArm];
-    const float cw = inspector.getWidth() / 7.0f;
+    const int cols = n > 14 ? 8 : 7;
+    const float cw = inspector.getWidth() / (float) cols;
     for (int j = 0; j < n; ++j)
-        cells[(size_t) j] = { inspector.getX() + (float) (j % 7) * cw, inspector.getY() + 20.0f + (float) (j / 7) * 30.0f,
+        cells[(size_t) j] = { inspector.getX() + (float) (j % cols) * cw, inspector.getY() + 20.0f + (float) (j / cols) * 30.0f,
                               cw - 12.0f, 26.0f };
 }
 
@@ -444,19 +554,8 @@ void KrakenView::paint (juce::Graphics& g)
                     juce::Justification::centredRight, false);
     }
 
-    // tentacles gripping the ship
-    if (shipActive && shipD < 0.8f)
-    {
-        float sx, sy, ssc, sang, sal;
-        shipPose (sx, sy, ssc, sang, sal);
-        for (int side = -1; side <= 1; side += 2)
-        {
-            const float sd = (float) side;
-            const juce::Point<float> p0 (headC.x + sd * headRx * 0.85f, headC.y - headRy * 0.1f);
-            const juce::Point<float> p3 (sx + sd * 44.0f * ssc, sy + 6.0f * ssc);
-            drawTentacle (g, p0, p3, sd, sd * 3.0f, 0.85f, false);
-        }
-    }
+    // tentacles reaching for the ship and dragging it down
+    drawShipTentacles (g);
 
     // arms (behind head)
     for (int i = 0; i < kNumArms; ++i)
@@ -541,7 +640,7 @@ void KrakenView::drawHeader (juce::Graphics& g)
     }
     g.setFont (monoFont (9.0f));
     g.setColour (white.withAlpha (0.3f));
-    g.drawText ("200 patches  |  77 parameters  |  8 voices", (int) W - 24 - 320, 3, 320, 11, juce::Justification::centredRight, false);
+    g.drawText ("200 patches  |  " + juce::String (kNumParams) + " parameters  |  8 voices", (int) W - 24 - 320, 3, 320, 11, juce::Justification::centredRight, false);
 
     // row under the preset browser: patch info, output meter, voices
     const float rowX = W - 368.0f, y3 = 90.0f;
@@ -631,8 +730,17 @@ void KrakenView::drawArenaDecor (juce::Graphics& g)
         }
 }
 
+juce::AffineTransform KrakenView::breathXf() const
+{
+    // slow in/out (about 0.25 Hz) - the head swells a little, pivoting around its lower half so the mouth stays put
+    const float b = std::sin (time * 1.55f);
+    return juce::AffineTransform::scale (1.0f + 0.010f * b, 1.0f + 0.028f * b, headC.x, headC.y + headRy * 0.55f);
+}
+
 void KrakenView::drawHead (juce::Graphics& g)
 {
+    juce::Graphics::ScopedSaveState breathState (g);
+    g.addTransform (breathXf());
     const auto white = juce::Colours::white;
     const auto black = juce::Colours::black;
     const float cx = headC.x, cy = headC.y, rx = headRx, ry = headRy;
@@ -757,7 +865,7 @@ void KrakenView::drawHead (juce::Graphics& g)
 
 void KrakenView::drawArm (juce::Graphics& g, int i, juce::Point<float> tip, bool highlight)
 {
-    drawTentacle (g, anchors[(size_t) i], tip, (i % 2 == 0) ? 1.0f : -1.0f, (float) i, 1.0f, highlight);
+    drawTentacle (g, anchors[(size_t) i].transformedBy (breathXf()), tip, (i % 2 == 0) ? 1.0f : -1.0f, (float) i, 1.0f, highlight);
 }
 
 void KrakenView::drawTentacle (juce::Graphics& g, juce::Point<float> p0, juce::Point<float> p3,
@@ -766,10 +874,12 @@ void KrakenView::drawTentacle (juce::Graphics& g, juce::Point<float> p0, juce::P
     const auto v = p3 - p0;
     const float len = std::max (1.0f, v.getDistanceFromOrigin());
     const juce::Point<float> nrm (-v.y / len, v.x / len);
-    const float wob1 = std::sin (time * 1.4f + phase * 1.9f) * 0.10f * len;
-    const float wob2 = std::sin (time * 1.1f + phase * 2.7f + 1.0f) * 0.10f * len;
-    const auto p1 = p0 + v * 0.33f + nrm * (sgn * 0.20f * len + wob1);
-    const auto p2 = p0 + v * 0.68f + nrm * (-sgn * 0.20f * len + wob2);
+    // the arms never rest: two slow waves plus a faint breathing swell. Only the control points move, the tip (p3) stays put.
+    const float breath = std::sin (time * 1.55f);
+    const float wob1 = (std::sin (time * 1.0f + phase * 1.9f) * 0.15f + std::sin (time * 2.3f + phase * 0.7f) * 0.035f) * len;
+    const float wob2 = (std::sin (time * 0.8f + phase * 2.7f + 1.0f) * 0.15f + std::sin (time * 1.9f + phase * 1.3f) * 0.035f) * len;
+    const auto p1 = p0 + v * (0.33f + 0.015f * breath) + nrm * (sgn * (0.20f + 0.03f * breath) * len + wob1);
+    const auto p2 = p0 + v * 0.68f + nrm * (-sgn * (0.20f - 0.03f * breath) * len + wob2);
 
     constexpr int N = 40;
     auto bez = [&] (float t)

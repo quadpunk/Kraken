@@ -43,7 +43,7 @@ juce::File PresetManager::recentFile() const
 std::unique_ptr<juce::XmlElement> PresetManager::toXml (const PresetEntry& e)
 {
     auto xml = std::make_unique<juce::XmlElement> (kPatchTag);
-    xml->setAttribute ("version", 1);
+    xml->setAttribute ("version", 3);
     xml->setAttribute ("name", e.name);
     xml->setAttribute ("category", e.category);
     xml->setAttribute ("root", e.root);
@@ -69,9 +69,11 @@ bool PresetManager::fromXml (const juce::XmlElement& xml, PresetEntry& e)
     e.root = juce::jlimit (0, 127, xml.getIntAttribute ("root", 60));
     e.timeMs = xml.getStringAttribute ("time").getLargeIntValue();
     e.patch = defaultPatch();
-    // patches written by older versions may have fewer parameters: the rest keeps its default
-    for (int i = 0; i < kNumParams && i < tokens.size(); ++i)
-        e.patch.p[(size_t) i] = juce::jlimit (0.0f, 1.0f, tokens[i].getFloatValue());
+    std::vector<float> values;
+    for (int i = 0; i < tokens.size(); ++i) values.push_back (juce::jlimit (0.0f, 1.0f, tokens[i].getFloatValue()));
+    values = upgradeParams (values, xml.getIntAttribute ("version", 1));   // older layouts -> current
+    // missing trailing parameters keep their default
+    for (size_t i = 0; i < (size_t) kNumParams && i < values.size(); ++i) e.patch.p[i] = values[i];
     e.patch.level = juce::jlimit (0.0f, 1.0f, (float) xml.getDoubleAttribute ("level", 0.7));
     e.patch.tune = juce::jlimit (-1.0f, 1.0f, (float) xml.getDoubleAttribute ("tune", 0.0));
     return true;
@@ -151,8 +153,10 @@ std::vector<PresetEntry> PresetManager::importFile (const juce::File& file)
             e.category = "Imported";
             e.root = juce::jlimit (0, 127, d.root);
             e.patch = defaultPatch();
-            for (size_t i = 0; i < (size_t) kNumParams && i < d.values.size(); ++i)
-                e.patch.p[i] = juce::jlimit (0.0f, 1.0f, d.values[i]);
+            auto values = d.values;
+            values = upgradeParams (values, d.version);
+            for (size_t i = 0; i < (size_t) kNumParams && i < values.size(); ++i)
+                e.patch.p[i] = juce::jlimit (0.0f, 1.0f, values[i]);
             e.patch.level = juce::jlimit (0.0f, 1.0f, d.level);
             e.patch.tune = (float) d.tuneCents * 0.01f;
             out.push_back (std::move (e));

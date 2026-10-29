@@ -37,6 +37,9 @@ public:
 private:
     enum class SelDrag { none, start, end, window };
     void drawArenaDecor (juce::Graphics& g);
+    juce::AffineTransform breathXf() const;                     // slow breathing of the head (arms follow their anchors)
+    void drawShipTentacles (juce::Graphics& g);                 // arms reaching for / dragging the sample
+    void drawShipWraps (juce::Graphics& g, float grab);         // coils around the hull (drawn in ship space)
     float timeToX (float t) const;
     float xToTime (float x) const;
     void timerCallback() override;
@@ -63,7 +66,7 @@ private:
     std::array<juce::Rectangle<float>, kraken::kNumArms> zones;
     std::array<juce::Point<float>, kraken::kNumArms> anchors;
     std::array<juce::Rectangle<float>, 6> kinRects;
-    std::array<juce::Rectangle<float>, 14> cells;
+    std::array<juce::Rectangle<float>, 16> cells;
     juce::Rectangle<float> arena, waveRect, regionRect, patchRect, inspector;
     juce::Point<float> headC, mousePos;
     float headRx = 95.0f, headRy = 80.0f;

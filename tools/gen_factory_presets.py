@@ -22,7 +22,7 @@ src = open(ENGINE).read()
 enum = re.search(r'enum : int\s*\{(.*?)\n\s*COUNT', src, re.S).group(1)
 enum = re.sub(r'//.*', '', enum)
 NAMES = [n.strip() for n in enum.split(',') if n.strip()]
-assert len(NAMES) == 77, len(NAMES)
+assert len(NAMES) == 86, len(NAMES)
 
 # ---- unit helpers ---------------------------------------------------------------------------
 def _lg(v, lo, hi): return min(1.0, max(0.0, math.log(v / lo) / math.log(hi / lo)))

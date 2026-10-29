@@ -28,6 +28,7 @@ struct AnalysisOptions
     int maxThreads = 8;
     float maxSeconds = 4.0f;   // analysed length cap (the editor lets the user pick the region)
     bool trimSilence = true;   // skip leading silence (off when the user chose the start point)
+    float forcePitchHz = 0.0f; // internal: analyse with this pitch hypothesis only
 };
 
 AnalysisResult runAnalysis (std::vector<float> mono, double sampleRate,

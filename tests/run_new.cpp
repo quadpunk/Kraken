@@ -8,7 +8,7 @@ int main(int argc, char** argv)
 {
     if (argc < 4) { printf("usage: run_new in.raw out.txt effort [sr]\n"); return 1; }
     FILE* f = fopen(argv[1], "rb"); std::vector<float> x; float v; while (fread(&v,4,1,f)==1) x.push_back(v); fclose(f);
-    AnalysisOptions o; o.effort = (float) atof(argv[3]); o.maxThreads = 8;
+    AnalysisOptions o; o.effort = (float) atof(argv[3]); o.maxThreads = 8; if (getenv("KT_SEED")) o.seed = (unsigned) atoi(getenv("KT_SEED"));
     double sr = argc > 4 ? atof(argv[4]) : 44100.0;
     auto t0 = std::chrono::steady_clock::now();
     auto r = runAnalysis(x, sr, [] { return false; }, [](float){}, o);
