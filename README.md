@@ -23,7 +23,7 @@ Needs CMake >= 3.22, a C++17 compiler and git (JUCE is fetched automatically).
 2. When done, the best patch is loaded. **PLAY SAMPLE / PLAY PATCH** let you A/B at the detected root note.
 3. Eight tentacles = eight modules. Drag a white tip (or click anywhere in its tide pool) to set its two main
    parameters (x / y). The **inspector** under the kraken shows every parameter of the selected module
-   (77 in total) as small sliders.
+   (86 in total) as small sliders.
    When a sample is loaded the kraken drags a little ship labelled SAMPLE down into its jaws, and when the
    patch is ready it spits up a pile of floating wreckage with a PATCH sign.
 4. The 6 blobs ("kin") are alternative patches. **MUTATE** spawns new relatives of the current patch.
@@ -54,6 +54,11 @@ All parameters are normal host parameters, so they can be automated.
   choose the region. Pick a single note/phrase with a stable pitch: a region containing several different notes gives a
   poor match. Regions longer than ~1 s search slightly less per second of audio to keep analysis times reasonable.
 
+## Engine extras (amp / filter-env / LFO groups)
+* **sus fall / f sus fall**: while a note is held the level (amp) or the filter env keeps sinking; 0 = hold forever.
+* **bursts / burst gap** (AMP + PITCH arm): re-triggers the amp envelope 2-6 times, 4-40 ms apart, before the normal decay - hand claps.
+* **lfo2 rate / shape / vib / filt / trem** (FILT ENV + LFO arm): a second, free-running LFO next to the first.
+
 ## Presets, recent patches, export
 Second row in the header: **[<] [patch name] [>] [SAVE] [EXPORT]**.
 * **Patch name button** opens the browser: *Recent* (every analysis result and save, newest first, kept between sessions),
@@ -70,11 +75,17 @@ re-run it; `tests/calibrate.cpp` equalises their loudness.
 1. Resample to 44.1 kHz (the rate the plugin plays at), trim silence, estimate pitch (YIN, 30 Hz - 2 kHz, parabolic
    refinement). Pitch hypotheses (incl. octave/fifth variants) are voted on by rendering archetypes and factory patches.
    The remaining cents go into the patch's hidden `tune`, so it is in tune at its root note.
-2. All archetypes + 200 factory patches (+ mutants) are rendered and scored. Score = salience-weighted log-spectral distance
-   at three time/frequency resolutions (25 Hz - 16 kHz, brighter-than-target errors count more) + loudness envelope +
-   spectral motion + brightness trajectory + bass weight + harmonicity + a small prior against exotic parameters.
-3. Three independent evolution-strategy islands start from the best different seeds, the best continues, then a tune line
-   search and coordinate polish. Alternatives become the "kin" blobs.
+2. Starting points: all archetypes + 200 factory patches (+ mutants), then **smart seeds built from the sample itself**:
+   * the amplitude envelope is measured and written into AMP A/D/S/R of the best seeds;
+   * the strongest steady partials are found (FFT peak picking) and oscillator A/B seeds are tuned to them (sine, saw, pulse):
+     this is what makes cowbells, bells and other clean/inharmonic sounds work;
+   * modulation is detected (filter wobble / vibrato / tremolo, rate and depth) and the best seeds get a matching LFO.
+3. Score = salience-weighted log-spectral distance at three time/frequency resolutions (25 Hz - 16 kHz, brighter-than-target
+   errors count more) + loudness envelope + spectral motion + brightness trajectory + bass weight + harmonicity + a small prior
+   against exotic parameters.
+4. Three independent evolution-strategy islands start from the best different seeds, the best continues, then a tune line
+   search and coordinate polish. Alternatives become the "kin" blobs. (A successive-halving variant exists behind
+   `tuning().halving`; it did not help at low effort in tests.)
 
 ## Known limits
 * Pitch can be wrong for slow-attack, heavily detuned or inharmonic sounds (the patch then plays at a wrong root).

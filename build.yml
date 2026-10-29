@@ -1,0 +1,48 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxcomposite-dev libxcursor-dev \
+            libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libfreetype-dev \
+            libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev
+
+      - name: Configure (macOS universal)
+        if: runner.os == 'macOS'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Configure
+        if: runner.os != 'macOS'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Add licence files to the artifact
+        shell: bash
+        run: |
+          [ -f LICENSE-AGPL-3.0.txt ] || curl -fsSL https://www.gnu.org/licenses/agpl-3.0.txt -o LICENSE-AGPL-3.0.txt
+          for f in LICENSE LICENSE-AGPL-3.0.txt BINARY_LICENSE.md THIRD_PARTY_NOTICES.md; do cp "$f" build/Kraken_artefacts/; done
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-at-ken-${{ runner.os }}
+          path: build/Kraken_artefacts
+          if-no-files-found: error
